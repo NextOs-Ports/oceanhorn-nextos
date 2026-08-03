@@ -66,7 +66,7 @@ hc_pids() {
       "$GAMEDIR/oceanhorn"*) echo "${p##*/}"; continue ;;
     esac
     c=$(cat "$p/comm" 2>/dev/null || true)
-    a=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null || true)
+    a=$({ tr '\0' ' ' < "$p/cmdline"; } 2>/dev/null || true)
     d=
     case "$c:$a" in
       UnityMain:*|oceanhorn*:*|*:"./oceanhorn"*|*:"$GAMEDIR/oceanhorn"*)
@@ -289,6 +289,12 @@ export TER_GAMEPAD=1
 # ⚠️ CUP_GCOFF chamava il2cpp_gc_disable por OFFSET do Terraria -> .rodata no HC = SIGSEGV.
 # Agora resolve por nome, mas segue OFF por padrão (não precisamos desligar o GC).
 [ -n "${CUP_GCOFF:-}" ] && export CUP_GCOFF || unset CUP_GCOFF
+# Aparelho de ~1 GB: coleta periódica do GC Boehm contém o heap gerenciado
+# (30 s a 30 fps). Em RAM folgada fica desligado — o default do jogo basta.
+if [ -z "${CUP_GCEVERY:-}" ] && [ "${_mem_kib:-0}" -gt 0 ] &&
+   [ "${_mem_kib:-0}" -lt 1250000 ]; then
+  export CUP_GCEVERY=900
+fi
 
 # O scaler do Mali-450 pode desligar pixel processors e manter só 400 MHz entre
 # os jobs do mesmo quadro. No Amlogic-old isto derrubou a mesma cena de 24–25
@@ -359,6 +365,28 @@ if [ "${OCEAN_GPU_PERFORMANCE:-1}" != 0 ] &&
   fi
 fi
 
+# Sem swap num aparelho de ~1 GB, o pico de gameplay vira SIGKILL do OOM
+# (relato de campo no dArkOSRE: jogo rodando e morto do nada). Garante um
+# swapfile FIXO de 512 MiB no cartão quando o firmware não oferece nenhum.
+OCEAN_SWAP_ON=0
+_swap_kib=$(awk '/^SwapTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo 0)
+case "${_swap_kib:-}" in ''|*[!0-9]*) _swap_kib=0 ;; esac
+if [ "${_mem_kib:-0}" -gt 0 ] && [ "${_mem_kib:-0}" -lt 1250000 ] &&
+   [ "$_swap_kib" -lt 262144 ] && [ "${OCEAN_NO_SWAPFILE:-0}" != 1 ]; then
+  SWAPFILE=$GAMEDIR/.oceanhorn.swap
+  if [ ! -f "$SWAPFILE" ]; then
+    echo "[run] sem swap no firmware; criando swapfile de 512 MiB"
+    dd if=/dev/zero of="$SWAPFILE" bs=1M count=512 status=none 2>/dev/null &&
+      ${ESUDO:-} mkswap "$SWAPFILE" >/dev/null 2>&1 || rm -f "$SWAPFILE"
+  fi
+  if [ -f "$SWAPFILE" ] && ${ESUDO:-} swapon "$SWAPFILE" 2>/dev/null; then
+    OCEAN_SWAP_ON=1
+    echo "[run] swapfile ativo ($SWAPFILE)"
+  else
+    echo "[run] swapfile indisponível neste filesystem; seguindo sem swap"
+  fi
+fi
+
 # Limpa o console visível: resto de texto do frontend/extrator não pode ficar
 # por cima da primeira cena (padrão Terraria).
 ${ESUDO:-} chmod 666 "$CUR_TTY" 2>/dev/null || true
@@ -419,5 +447,6 @@ if [ -n "$GPU_THERM_PID" ]; then
   wait "$GPU_THERM_PID" 2>/dev/null || true
   GPU_THERM_PID=
 fi
+[ "${OCEAN_SWAP_ON:-0}" = 1 ] && ${ESUDO:-} swapoff "$GAMEDIR/.oceanhorn.swap" 2>/dev/null
 command -v pm_finish >/dev/null 2>&1 && pm_finish
 exit "$STATUS"

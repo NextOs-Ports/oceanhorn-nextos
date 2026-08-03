@@ -1,5 +1,29 @@
 # Changelog — Oceanhorn: Chronos Dungeon (NextOS Ports)
 
+## v1.0.2 (Universal) — 03/08/2026
+
+Correções guiadas pelos primeiros logs de campo (obrigado, testadores!).
+
+### Corrigido
+- **ROCKNIX/Panfrost (RG-DS): abortava com "[EGL] Unable to find a configuration
+  matching minimum spec"** — dois defeitos combinados:
+  - PulseAudio herdado morto derrubava o `SDL_Init(VIDEO|AUDIO)` inteiro; vídeo
+    e áudio agora inicializam separados, com retry sem o driver herdado (o
+    mesmo fix validado no TASM2 v1.1.7 e no Horizon Chase v1.0.3).
+  - O Mesa devolvia RGBX8888 e este Unity exige RGBA8888 exato; adotado o
+    contrato de EGLConfig do Horizon Chase v1.0.3 (seleção e relato do config
+    real RGBA de 8 bits por canal).
+- **dArkOSRE (R36S): jogo encerrado do nada em gameplay (`Killed`)** — era o
+  OOM killer num firmware sem swap. O launcher agora garante um swapfile fixo
+  de 512 MiB quando o aparelho tem <1,25 GB de RAM e nenhum swap; além disso,
+  em aparelhos de ~1 GB o GC do IL2CPP passa a coletar periodicamente
+  (`CUP_GCEVERY=900`) para conter o heap gerenciado.
+- **muOS (RG 40XX-H): wrapper falhava sem deixar rastro** — o wrapper agora
+  registra `oceanhorn-wrapper.log` ao lado de si mesmo com os caminhos
+  testados, mostra o erro na tela, e conhece as raízes de ROMs do muOS
+  (`/mnt/mmc`, `/mnt/sdcard`) e do Batocera (`/userdata`).
+- Varredura de instâncias não polui mais o log com corridas de `/proc`.
+
 ## v1.0.1 (Universal) — 03/08/2026
 
 Correção crítica de campo: a v1.0.0 falhava em silêncio absoluto fora dos

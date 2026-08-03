@@ -6680,7 +6680,33 @@ int main(int argc, char **argv) {
      DRM/compositor: janela SDL + re-rota os egl* da Unity p/ egl_shim. */
   if (cup_use_kmsdrm()) {
     extern int egl_shim_ensure_current(void);
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) fprintf(stderr, "[F2] SDL_Init(VIDEO|AUDIO): %s\n", SDL_GetError());
+    /* VÍDEO e ÁUDIO separados: no ROCKNIX o PULSE herdado morto derrubava o
+     * SDL_Init(VIDEO|AUDIO) inteiro -> driver=(null) -> EGL cru no Wayland ->
+     * a Unity abortava em "Unable to find a configuration matching minimum
+     * spec". Áudio nunca pode custar o vídeo. */
+    if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
+      fprintf(stderr, "[F2] SDL_Init(VIDEO): %s\n", SDL_GetError());
+      /* backend herdado inválido: remove só após a falha e re-tenta UMA vez,
+       * logado (contrato da base multi-device). */
+      const char *vd = getenv("SDL_VIDEODRIVER");
+      if (vd && *vd) {
+        fprintf(stderr, "[F2] SDL_VIDEODRIVER herdado '%s' falhou; retry sem ele\n", vd);
+        unsetenv("SDL_VIDEODRIVER");
+        if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0)
+          fprintf(stderr, "[F2] SDL_Init(VIDEO) retry: %s\n", SDL_GetError());
+      }
+    }
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
+      fprintf(stderr, "[F2] SDL_Init(AUDIO): %s\n", SDL_GetError());
+      const char *ad = getenv("SDL_AUDIODRIVER");
+      if (ad && *ad) {
+        fprintf(stderr, "[F2] SDL_AUDIODRIVER herdado '%s' falhou; retry sem ele\n", ad);
+        unsetenv("SDL_AUDIODRIVER");
+        unsetenv("PULSE_SERVER");
+        if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0)
+          fprintf(stderr, "[F2] SDL_Init(AUDIO) retry: %s (seguindo sem áudio SDL)\n", SDL_GetError());
+      }
+    }
     fprintf(stderr, "[F2] SDL/KMS: video driver = %s\n",
             SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "(null)");
     egl_shim_create_window();
