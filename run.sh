@@ -38,6 +38,25 @@ cd "$GAMEDIR" || { echo "sem $GAMEDIR"; exit 1; }
 exec 9>"$GAMEDIR/.oceanhorn.lock"
 flock -n 9 || { echo "ABORTO: outro launcher do Oceanhorn já está ativo"; exit 1; }
 
+# TODO o ciclo fica registrado em launcher.log (rotacionado). Sem isso, um port
+# lançado pelo menu falha em silêncio absoluto — lição da v1.0.0.
+[ -s "$GAMEDIR/launcher.log" ] &&
+  mv -f -- "$GAMEDIR/launcher.log" "$GAMEDIR/launcher.prev.log" 2>/dev/null
+exec > "$GAMEDIR/launcher.log" 2>&1
+echo "=== Oceanhorn Chronos Dungeon | $(date -Is 2>/dev/null || date) ==="
+
+# Erro fatal: registra no log E mostra na tela do aparelho (CUR_TTY), porque o
+# usuário não tem terminal — sem isso todo erro vira "tela preta".
+launcher_error() {
+  echo "ERRO: $*"
+  {
+    printf '\033[2J\033[H\n\n  OCEANHORN CHRONOS DUNGEON\n\n  %s\n\n' "$*"
+    printf '  Detalhes em ports/oceanhorn/launcher.log\n'
+  } > "$CUR_TTY" 2>/dev/null || true
+  sleep 6
+  exit 1
+}
+
 # Nunca lançar sobre instância viva. Confere executable, cwd/comm e também o
 # executable marcado "(deleted)" após uma eventual substituição de arquivo.
 hc_pids() {
@@ -92,6 +111,8 @@ fi
 # o arquivo legal do usuário nunca é apagado; dados antigos válidos são adotados.
 ${ESUDO:-} chmod +x "$GAMEDIR/run-extractor.sh" "$GAMEDIR/nxextract-runtime-env.sh"   "$GAMEDIR/nxextract.py" "$GAMEDIR/nxextract-ui" 2>/dev/null || true
 if [ -f "$GAMEDIR/extractor.json" ] && [ -x "$GAMEDIR/run-extractor.sh" ]; then
+  command -v python3 >/dev/null 2>&1 ||
+    launcher_error "Este firmware não tem python3; o instalador de dados não pode rodar."
   # Instalação legada (fase 1) tinha as libs no root do port. Normaliza para o
   # layout lib/ ANTES do extrator, para a adoção validar por hash em vez de
   # pedir o APK de novo a quem já tem tudo instalado.
@@ -110,11 +131,8 @@ if [ -f "$GAMEDIR/extractor.json" ] && [ -x "$GAMEDIR/run-extractor.sh" ]; then
         nx_firmware_libraries=${nx_firmware_libraries:+$nx_firmware_libraries:}$_d
     done
   fi
-  NXEXTRACT_GAME_DIR=$GAMEDIR   NXEXTRACT_FIRMWARE_LIBRARY_PATH=$nx_firmware_libraries     "$GAMEDIR/run-extractor.sh" || {
-    echo "ABORTO: preparação dos dados do jogo falhou ($?)"
-    echo "Coloque seu APK legal do Oceanhorn em $GAMEDIR/gamedata/ e tente de novo."
-    exit 1
-  }
+  NXEXTRACT_GAME_DIR=$GAMEDIR   NXEXTRACT_FIRMWARE_LIBRARY_PATH=$nx_firmware_libraries     "$GAMEDIR/run-extractor.sh" ||
+    launcher_error "Dados do jogo ausentes ou inválidos. Coloque seu APK do Oceanhorn (4.0b54, arm64) em ports/oceanhorn/gamedata/ e abra de novo."
   # so_load abre "libunity.so" relativo ao GAMEDIR; o payload instalado fica em
   # lib/. Materializa cópias no root (symlink não existe em FAT — errno 524).
   for _so in libmain libunity libil2cpp; do
@@ -142,12 +160,26 @@ if [ -n "${LD_LIBRARY_PATH:-}" ]; then
 else
   export LD_LIBRARY_PATH=$_libs:$GAMEDIR
 fi
+export SDL_VIDEO_FULLSCREEN_DESKTOP=1
+export SDL_GAMECONTROLLER_USE_BUTTON_LABELS=0
 [ -n "${sdl_controllerconfig:-}" ] &&
   export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
+if [ -z "${SDL_GAMECONTROLLERCONFIG_FILE:-}" ] && [ -n "${controlfolder:-}" ]; then
+  for _db in "$controlfolder/gamecontrollerdb.txt"              "$controlfolder/gamecontrollerdb-SDL2.txt"; do
+    [ -r "$_db" ] && [ ! -L "$_db" ] &&
+      { export SDL_GAMECONTROLLERCONFIG_FILE=$_db; break; }
+  done
+fi
 ${ESUDO:-} chmod 666 "$CUR_TTY" /dev/uinput 2>/dev/null || true
 # Unity/FMOD create many short-lived worker threads. Two malloc arenas avoid
 # retaining one fragmented glibc heap per thread on the 1 GB Mali-450 target.
 export MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-2}
+_mem_kib=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || true)
+case "${_mem_kib:-}" in ''|*[!0-9]*) _mem_kib=0 ;; esac
+if [ "$_mem_kib" -gt 0 ] && [ "$_mem_kib" -lt 1250000 ]; then
+  export MALLOC_TRIM_THRESHOLD_=${MALLOC_TRIM_THRESHOLD_:-131072}
+  export MALLOC_MMAP_THRESHOLD_=${MALLOC_MMAP_THRESHOLD_:-65536}
+fi
 # UnityPlayer is driven by Android Choreographer at 30 Hz in this title. Keep
 # that native cadence on every backend unless an explicit engineering override
 # is supplied; an unlimited host loop wastes CPU/GPU and inflates driver queues.
@@ -327,6 +359,11 @@ if [ "${OCEAN_GPU_PERFORMANCE:-1}" != 0 ] &&
   fi
 fi
 
+# Limpa o console visível: resto de texto do frontend/extrator não pode ficar
+# por cima da primeira cena (padrão Terraria).
+${ESUDO:-} chmod 666 "$CUR_TTY" 2>/dev/null || true
+printf '\033c' >> "$CUR_TTY" 2>/dev/null || true
+
 # Runtime público de baixa glibc é o padrão em qualquer firmware; o build contra
 # a glibc corrente do NextOS só entra se for o único presente.
 if [ -x "$GAMEDIR/oceanhorn-universal" ]; then
@@ -334,9 +371,14 @@ if [ -x "$GAMEDIR/oceanhorn-universal" ]; then
 elif [ -x "$GAMEDIR/oceanhorn" ]; then
   GAME_BIN=$GAMEDIR/oceanhorn
 else
-  echo "ABORTO: nenhum executável do Oceanhorn em $GAMEDIR"; exit 1
+  launcher_error "Executável do port ausente — reinstale o pacote."
 fi
-echo "[run] binário: ${GAME_BIN##*/}"
+echo "[run] binário: ${GAME_BIN##*/} ($(sha256sum "$GAME_BIN" 2>/dev/null | cut -c1-12))"
+echo "[run] video=${SDL_VIDEODRIVER:-firmware-auto} audio=${SDL_AUDIODRIVER:-firmware-auto} cfw=${CFW_NAME:-nenhum}"
+if command -v pm_platform_helper >/dev/null 2>&1; then
+  pm_platform_helper "$GAME_BIN" >/dev/null ||
+    launcher_error "PortMaster não conseguiu preparar o frontend deste CFW."
+fi
 "$GAME_BIN" &
 GAME_PID=$!
 if [ "$GPU_PINNED" = 1 ] && [ -n "$GPU_COOL_FREQ" ] &&

@@ -1,5 +1,23 @@
 # Changelog — Oceanhorn: Chronos Dungeon (NextOS Ports)
 
+## v1.0.1 (Universal) — 03/08/2026
+
+Correção crítica de campo: a v1.0.0 falhava em silêncio absoluto fora dos
+aparelhos de desenvolvimento — sem nenhum log e sem nenhuma mensagem na tela.
+
+### Corrigido
+- **Logs**: todo o ciclo (extrator, launcher e jogo) agora é gravado sozinho em
+  `ports/oceanhorn/launcher.log` (rotacionado em `launcher.prev.log`). A v1.0.0
+  não redirecionava nada quando lançada pelo menu.
+- **Erros visíveis**: falha fatal agora aparece na tela do aparelho (`CUR_TTY`)
+  com instrução do que fazer, em vez de voltar ao menu como "tela preta".
+- **`pm_platform_helper`**: o helper do PortMaster que faz o frontend de cada
+  CFW entregar o display agora é chamado antes do jogo (padrão Prizefighters 2).
+  Sem ele, em vários firmwares o jogo rodava atrás de uma tela preta.
+- Console visível é limpo antes da primeira cena (padrão Terraria).
+- `python3` ausente vira mensagem clara em vez de falha muda.
+- Ajustes de malloc para aparelhos com pouca RAM (padrão PF2).
+
 ## v1.0.0 (Universal) — 03/08/2026
 
 Primeira versão multi-device.
