@@ -2166,6 +2166,20 @@ static int gl_storage_is_scalable_upload(unsigned ifmt) {
 }
 
 static unsigned char ds_shift[DS_MAXTEXID];  /* fator de downscale (log2) por tex id */
+
+/* CUP_TEX16=1: atlas ESTÁTICO RGBA8 grande (>=1024 num eixo) sobe como
+ * RGBA4444 — metade da RAM de textura mantendo a resolução da arte. Pixel art
+ * usa alpha duro (0/255), então 4 bits de alpha preservam o recorte. Render
+ * target (tela, ~640x480) e sRGB ficam intactos; comprimido idem. */
+static int g_tex16 = 0;
+static unsigned char ds_tex16[DS_MAXTEXID];  /* storage convertido p/ RGBA4 */
+static void tex16_pack(const unsigned char *src, unsigned short *dst, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    const unsigned char *q = src + i * 4;
+    dst[i] = (unsigned short)(((q[0] >> 4) << 12) | ((q[1] >> 4) << 8) |
+                              ((q[2] >> 4) << 4) | (q[3] >> 4));
+  }
+}
 static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h, int b, unsigned fmt, unsigned type, const void *px) {
   if (lvl == 0 && tgt == 0x0DE1) ds_rectex(w, h, "tex");
   if (g_texture_trace && lvl == 0 && tgt == 0x0DE1 && px &&
@@ -2237,8 +2251,34 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h, int b
                 tid, w, h, nw, nh, st, lvl);
         fsync(2);
       }
+      if (g_tex16 && fmt == 0x1908 && type == 0x1401 &&
+          (w >= 1024 || h >= 1024)) {
+        unsigned short *pk = malloc((size_t)nw * nh * 2);
+        if (pk) {
+          tex16_pack(dst, pk, (size_t)nw * nh);
+          ds_r_TexImage2D(tgt, lvl, ifmt == 0x8058 ? 0x8056 : ifmt,
+                          nw, nh, b, fmt, 0x8033, pk);
+          free(pk); free(dst);
+          return;
+        }
+      }
       ds_r_TexImage2D(tgt, lvl, ifmt, nw, nh, b, fmt, type, dst);
       free(dst);
+      return;
+    }
+  }
+  if (g_tex16 && tgt == 0x0DE1 && px && fmt == 0x1908 && type == 0x1401 &&
+      (w >= 1024 || h >= 1024)) {
+    unsigned short *pk = malloc((size_t)w * h * 2);
+    if (pk) {
+      tex16_pack(px, pk, (size_t)w * h);
+      static int n16;
+      if (g_texture_trace && n16++ < 24)
+        fprintf(stderr, "[TEX16] tex=%d %dx%d RGBA8->4444 (lvl%d)\n",
+                (int)ds_geti(0x8069), w, h, lvl);
+      ds_r_TexImage2D(tgt, lvl, ifmt == 0x8058 ? 0x8056 : ifmt,
+                      w, h, b, fmt, 0x8033, pk);
+      free(pk);
       return;
     }
   }
@@ -2286,7 +2326,17 @@ static void my_glTexStorage2D(unsigned tgt, int levels, unsigned ifmt,
     fprintf(stderr,
             "[TEXHALF] storage tex=%d ifmt=0x%X %dx%d -> %dx%d (/%d)\n",
             tid, ifmt, w, h, nw, nh, 1 << shift);
-  ds_r_TexStorage2D(tgt, levels, ifmt, nw, nh);
+  unsigned out_ifmt = ifmt;
+  if (g_tex16 && tgt == 0x0DE1 && ifmt == 0x8058 /* RGBA8, nunca sRGB */ &&
+      (w >= 1024 || h >= 1024) && tid > 0 && tid < DS_MAXTEXID) {
+    out_ifmt = 0x8056; /* GL_RGBA4 */
+    ds_tex16[tid] = 1;
+    if (g_texture_trace || call <= 8)
+      fprintf(stderr, "[TEX16] storage tex=%d %dx%d RGBA8->RGBA4\n", tid, nw, nh);
+  } else if (tid > 0 && tid < DS_MAXTEXID) {
+    ds_tex16[tid] = 0;
+  }
+  ds_r_TexStorage2D(tgt, levels, out_ifmt, nw, nh);
 }
 
 static void my_glTexStorage3D(unsigned tgt, int levels, unsigned ifmt,
@@ -2345,11 +2395,40 @@ static void my_glTexSubImage2D(unsigned tgt, int lvl, int x, int y,
             memcpy(dst_line + (size_t)dx * bpp,
                    src_line + (size_t)(dx * step) * bpp, bpp);
         }
+        if (tid > 0 && tid < DS_MAXTEXID && ds_tex16[tid] &&
+            fmt == 0x1908 && type == 0x1401) {
+          unsigned short *pk = malloc((size_t)nw * nh * 2);
+          if (pk) {
+            for (int dy = 0; dy < nh; dy++)
+              tex16_pack(dst + (size_t)dy * dst_row,
+                         pk + (size_t)dy * nw, (size_t)nw);
+            ds_r_TexSubImage2D(tgt, lvl, x >> shift, y >> shift,
+                               nw, nh, fmt, 0x8033, pk);
+            free(pk); free(dst);
+            return;
+          }
+        }
         ds_r_TexSubImage2D(tgt, lvl, x >> shift, y >> shift,
                            nw, nh, fmt, type, dst);
         free(dst);
         return;
       }
+    }
+  }
+  if (tid > 0 && tid < DS_MAXTEXID && ds_tex16[tid] && px &&
+      fmt == 0x1908 && type == 0x1401 && !ds_geti(0x88EF)) {
+    int alignment = ds_geti(0x0CF5);
+    if (alignment != 1 && alignment != 2 && alignment != 4 && alignment != 8)
+      alignment = 4;
+    size_t src_row = ((size_t)w * 4 + alignment - 1) & ~(size_t)(alignment - 1);
+    unsigned short *pk = malloc((size_t)w * h * 2);
+    if (pk) {
+      const unsigned char *src = px;
+      for (int dy = 0; dy < h; dy++)
+        tex16_pack(src + (size_t)dy * src_row, pk + (size_t)dy * w, (size_t)w);
+      ds_r_TexSubImage2D(tgt, lvl, x, y, w, h, fmt, 0x8033, pk);
+      free(pk);
+      return;
     }
   }
   /*
@@ -4031,6 +4110,8 @@ static void ds_init(void) {
   g_texture_trace =
       getenv("HC_TEXTURE_TRACE") || getenv("HC_VERBOSE");
   if (getenv("CUP_TEXHALF")) { g_texhalf = atoi(getenv("CUP_TEXHALF")); if (g_texhalf < 2) g_texhalf = 1024; }
+  g_tex16 = getenv("CUP_TEX16") ? atoi(getenv("CUP_TEX16")) : 0;
+  if (g_tex16) fprintf(stderr, "[TEX16] atlas RGBA8>=1024 -> RGBA4444 (economia de RAM)\n");
   if (
 #if HC_DEV_DIAGNOSTICS
       !getenv("CUP_DRAWSPY") &&

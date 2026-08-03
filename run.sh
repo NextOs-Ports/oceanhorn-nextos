@@ -260,6 +260,13 @@ if [ -z "${CUP_TEXHALF:-}" ]; then
   fi
 fi
 [ -n "${CUP_TEXHALF:-}" ] && export CUP_TEXHALF || unset CUP_TEXHALF
+# Economia de RAM em device DRM curto: atlas RGBA8 grande sobe como RGBA4444
+# (metade da RAM de textura, resolução da arte intacta). Mali-450/fbdev fica
+# fora: o alvo publicado não muda.
+if [ -z "${CUP_TEX16:-}" ] && [ "${_has_drm:-0}" -eq 1 ] &&
+   [ "${_mem_kb:-0}" -gt 0 ] && [ "${_mem_kb:-0}" -lt 1250000 ]; then
+  export CUP_TEX16=1
+fi
 # Horizon's GLES2 sprite variant asks for a split external-alpha sampler even
 # after the unsupported ASTC atlases have been decoded to ordinary RGBA. On
 # this build that sampler is a zero-filled dummy, making affected sprites

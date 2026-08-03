@@ -1,5 +1,21 @@
 # Changelog — Oceanhorn: Chronos Dungeon (NextOS Ports)
 
+## v1.0.3 (Universal) — 03/08/2026
+
+Rodar em 1 GB de verdade — por economia no binário, nunca mexendo no sistema
+de ninguém.
+
+### Adicionado
+- **CUP_TEX16**: atlas estático RGBA8 com 1024+ num eixo sobe para a GPU como
+  **RGBA4444** — metade da RAM de textura com a resolução da arte intacta
+  (pixel art usa alpha duro, que 4 bits preservam). Automático em aparelho DRM
+  com <1,25 GB; render targets, sRGB e texturas comprimidas ficam intactos.
+  O Mali-450/fbdev não muda em nada.
+
+### Corrigido
+- Nenhum swap é criado, em nenhuma hipótese (removido no mesmo dia em que
+  entrou; era prática de PortMaster antigo e não volta).
+
 ## v1.0.2 (Universal) — 03/08/2026
 
 Correções guiadas pelos primeiros logs de campo (obrigado, testadores!).
