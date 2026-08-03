@@ -1,0 +1,3 @@
+# Declarações auditadas do pacote público do Oceanhorn.
+# Formato: tipo|caminho relativo ao stage|justificativa com evidência.
+supervised-child|oceanhorn/run.sh|O jogo roda em background por necessidade real: o launcher precisa continuar vivo para vigiar temperatura da GPU e restaurar o perfil. Contrato cumprido: GAME_PID=$! logo após o lançamento; traps TERM/INT/HUP chamam stop_game, que sinaliza o PID exato e faz wait; trap EXIT restaura a GPU; wait "$GAME_PID" no fim mantém o launcher em foreground até o jogo terminar, e o status do jogo é propagado. Sem setsid, sem nohup, sem detach.

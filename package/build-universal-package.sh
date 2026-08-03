@@ -63,6 +63,13 @@ TXT
   echo "    nenhum backend, resolução ou perfil é fixado por nome de aparelho."
 } > "$STAGE/oceanhorn/MANIFEST.txt"
 
+# Gate do checklist multi-device: o stage inteiro passa pelo auditor público
+# antes de virar pacote. O allow declara o filho supervisionado do launcher.
+AUDIT=$PORT_DIR/../../suportando_outros_devices/tools/audit-portability.sh
+if [ -x "$AUDIT" ]; then
+  "$AUDIT" --allow "$PORT_DIR/package/audit-allow.txt" "$STAGE" | tail -2
+fi
+
 CODE_ZIP="$OUT_DIR/$NAME (Universal) v$VERSION.zip"
 rm -f "$CODE_ZIP"
 ( cd "$STAGE" && zip -rq "$CODE_ZIP" . )

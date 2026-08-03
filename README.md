@@ -25,6 +25,17 @@ Outros CFWs AArch64 (muOS, ROCKNIX, Batocera, Knulli e afins) são atendidos por
 detecção de capacidade, mas ainda **não** têm prova física — não os declaramos
 validados até alguém rodar.
 
+
+### Capturas
+
+| R36S / ArkOS (640×480) | NextOS Elite / Mali-450 (1280×720) |
+|---|---|
+| ![gameplay no R36S](package/images/03-gameplay-r36s.png) | ![título no Mali-450](package/images/04-mali450.png) |
+
+| Título | Abertura |
+|---|---|
+| ![título](package/images/01-titulo-r36s.png) | ![abertura](package/images/02-abertura-r36s.png) |
+
 ### Architecture
 
 The loader reproduces the native Android sequence instead of replacing it:
