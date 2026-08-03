@@ -242,9 +242,17 @@ if [ -z "${CUP_TEXHALF:-}" ]; then
   for _card in /dev/dri/card[0-9]*; do
     [ -e "$_card" ] && { _has_drm=1; break; }
   done
+  _swap_kb=$(awk '/^SwapTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo 0)
+  case "${_swap_kb:-}" in ''|*[!0-9]*) _swap_kb=0 ;; esac
   if [ "$_has_drm" -eq 1 ] && [ "$_mem_kb" -gt 0 ] &&
      [ "$_mem_kb" -lt 1250000 ]; then
-    CUP_TEXHALF=512
+    # Sem NENHUM swap no firmware, o pico de gameplay já matou o jogo por OOM
+    # (relato dArkOSRE). Não criamos swap: apertamos o perfil de textura.
+    if [ "$_swap_kb" -lt 65536 ]; then
+      CUP_TEXHALF=384
+    else
+      CUP_TEXHALF=512
+    fi
   elif [ "$_has_drm" -eq 1 ] && [ "$_mem_kb" -ge 1700000 ]; then
     unset CUP_TEXHALF
   else
@@ -365,28 +373,6 @@ if [ "${OCEAN_GPU_PERFORMANCE:-1}" != 0 ] &&
   fi
 fi
 
-# Sem swap num aparelho de ~1 GB, o pico de gameplay vira SIGKILL do OOM
-# (relato de campo no dArkOSRE: jogo rodando e morto do nada). Garante um
-# swapfile FIXO de 512 MiB no cartão quando o firmware não oferece nenhum.
-OCEAN_SWAP_ON=0
-_swap_kib=$(awk '/^SwapTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo 0)
-case "${_swap_kib:-}" in ''|*[!0-9]*) _swap_kib=0 ;; esac
-if [ "${_mem_kib:-0}" -gt 0 ] && [ "${_mem_kib:-0}" -lt 1250000 ] &&
-   [ "$_swap_kib" -lt 262144 ] && [ "${OCEAN_NO_SWAPFILE:-0}" != 1 ]; then
-  SWAPFILE=$GAMEDIR/.oceanhorn.swap
-  if [ ! -f "$SWAPFILE" ]; then
-    echo "[run] sem swap no firmware; criando swapfile de 512 MiB"
-    dd if=/dev/zero of="$SWAPFILE" bs=1M count=512 status=none 2>/dev/null &&
-      ${ESUDO:-} mkswap "$SWAPFILE" >/dev/null 2>&1 || rm -f "$SWAPFILE"
-  fi
-  if [ -f "$SWAPFILE" ] && ${ESUDO:-} swapon "$SWAPFILE" 2>/dev/null; then
-    OCEAN_SWAP_ON=1
-    echo "[run] swapfile ativo ($SWAPFILE)"
-  else
-    echo "[run] swapfile indisponível neste filesystem; seguindo sem swap"
-  fi
-fi
-
 # Limpa o console visível: resto de texto do frontend/extrator não pode ficar
 # por cima da primeira cena (padrão Terraria).
 ${ESUDO:-} chmod 666 "$CUR_TTY" 2>/dev/null || true
@@ -447,6 +433,5 @@ if [ -n "$GPU_THERM_PID" ]; then
   wait "$GPU_THERM_PID" 2>/dev/null || true
   GPU_THERM_PID=
 fi
-[ "${OCEAN_SWAP_ON:-0}" = 1 ] && ${ESUDO:-} swapoff "$GAMEDIR/.oceanhorn.swap" 2>/dev/null
 command -v pm_finish >/dev/null 2>&1 && pm_finish
 exit "$STATUS"

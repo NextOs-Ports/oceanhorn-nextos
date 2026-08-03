@@ -14,10 +14,10 @@ Correções guiadas pelos primeiros logs de campo (obrigado, testadores!).
     contrato de EGLConfig do Horizon Chase v1.0.3 (seleção e relato do config
     real RGBA de 8 bits por canal).
 - **dArkOSRE (R36S): jogo encerrado do nada em gameplay (`Killed`)** — era o
-  OOM killer num firmware sem swap. O launcher agora garante um swapfile fixo
-  de 512 MiB quando o aparelho tem <1,25 GB de RAM e nenhum swap; além disso,
-  em aparelhos de ~1 GB o GC do IL2CPP passa a coletar periodicamente
-  (`CUP_GCEVERY=900`) para conter o heap gerenciado.
+  OOM killer num firmware sem swap. Resolvido por ECONOMIA, sem tocar no
+  sistema do usuário: teto de textura mais agressivo (384) quando o firmware
+  não oferece swap nenhum, e GC periódico do IL2CPP (`CUP_GCEVERY=900`) em
+  aparelhos de ~1 GB para conter o heap gerenciado. Nenhum swap é criado.
 - **muOS (RG 40XX-H): wrapper falhava sem deixar rastro** — o wrapper agora
   registra `oceanhorn-wrapper.log` ao lado de si mesmo com os caminhos
   testados, mostra o erro na tela, e conhece as raízes de ROMs do muOS
