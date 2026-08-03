@@ -1,0 +1,19 @@
+# BYO game data — nunca versionado
+bin/
+userdata/
+*.apk
+*.obb
+*.unity3d
+*.resource
+libunity.so
+libil2cpp.so
+libmain.so
+*.so
+
+# artefatos de build e capturas de bring-up
+oceanhorn
+oceanhorn-universal
+package/dist/
+*.log
+*.raw
+*.tar.gz
