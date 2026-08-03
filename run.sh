@@ -246,13 +246,9 @@ if [ -z "${CUP_TEXHALF:-}" ]; then
   case "${_swap_kb:-}" in ''|*[!0-9]*) _swap_kb=0 ;; esac
   if [ "$_has_drm" -eq 1 ] && [ "$_mem_kb" -gt 0 ] &&
      [ "$_mem_kb" -lt 1250000 ]; then
-    # Sem NENHUM swap no firmware, o pico de gameplay já matou o jogo por OOM
-    # (relato dArkOSRE). Não criamos swap: apertamos o perfil de textura.
-    if [ "$_swap_kb" -lt 65536 ]; then
-      CUP_TEXHALF=384
-    else
-      CUP_TEXHALF=512
-    fi
+    # Teto 512 sempre: o TEX16 (RGBA4444) já corta a RAM pela metade com
+    # nitidez maior que um teto 384 em 8888 — o "borrado" do campo era o 384.
+    CUP_TEXHALF=512
   elif [ "$_has_drm" -eq 1 ] && [ "$_mem_kb" -ge 1700000 ]; then
     unset CUP_TEXHALF
   else
@@ -304,12 +300,9 @@ export TER_GAMEPAD=1
 # ⚠️ CUP_GCOFF chamava il2cpp_gc_disable por OFFSET do Terraria -> .rodata no HC = SIGSEGV.
 # Agora resolve por nome, mas segue OFF por padrão (não precisamos desligar o GC).
 [ -n "${CUP_GCOFF:-}" ] && export CUP_GCOFF || unset CUP_GCOFF
-# Aparelho de ~1 GB: coleta periódica do GC Boehm contém o heap gerenciado
-# (30 s a 30 fps). Em RAM folgada fica desligado — o default do jogo basta.
-if [ -z "${CUP_GCEVERY:-}" ] && [ "${_mem_kib:-0}" -gt 0 ] &&
-   [ "${_mem_kib:-0}" -lt 1250000 ]; then
-  export CUP_GCEVERY=900
-fi
+# ⚠️ NÃO forçar il2cpp_gc_collect periódico: crashou a ~60s no campo (muOS,
+# SEGV logo após "[GCEVERY] limpeza"). Pressão de memória usa o caminho
+# ANDROID nativo: nativeLowMemory quando MemAvailable aperta (no binário).
 
 # O scaler do Mali-450 pode desligar pixel processors e manter só 400 MHz entre
 # os jobs do mesmo quadro. No Amlogic-old isto derrubou a mesma cena de 24–25

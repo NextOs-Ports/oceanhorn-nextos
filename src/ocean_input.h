@@ -9,6 +9,7 @@
 void ocean_input_init(void);
 void ocean_input_poll(void *env, void *thiz, void *inject);
 int ocean_input_exit_requested(void);
+void ocean_input_notify_event(const void *sdl_event);
 void ocean_input_shutdown(void);
 
 #endif

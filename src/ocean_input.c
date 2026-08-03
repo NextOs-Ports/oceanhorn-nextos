@@ -73,6 +73,7 @@ static SDL_Joystick *g_raw;            /* fallback: pad fora da base do SDL */
  * físicos (RG351/R36S/GO-Super). -1 = pad normal, caminho intocado. */
 static int g_th_sel = -1, g_th_start = -1;
 static unsigned char g_down[B_COUNT];
+static unsigned char g_latched[B_COUNT];   /* DOWN visto por evento entre polls */
 static unsigned char g_stick_direction[4]; /* up, down, left, right */
 static int g_verbose;
 static int g_open_retry;
@@ -99,8 +100,10 @@ static float axis_norm(Sint16 v) {
  * DOWN/UP repetidos quando um stick gasto oscila perto da zona morta.
  */
 static void stick_to_dpad(float x, float y, unsigned char *buttons) {
-  const float engage = 0.35f;
-  const float release = 0.22f;
+  /* Stick gasto descansa em ~0,25: com release baixo a direção ENGAJADA nunca
+   * soltava e o d-pad virava diagonal ("continua indo pra cima"). */
+  const float engage = 0.40f;
+  const float release = 0.30f;
 
   g_stick_direction[0] =
       g_stick_direction[0] ? y < -release : y < -engage; /* up */
@@ -347,11 +350,36 @@ void ocean_input_poll(void *env, void *thiz, void *inject) {
     memcpy(g_ocean_motion.axis, ax, sizeof ax);
     inject_motion(env, thiz, inject);
   }
+  /* toque mais curto que um poll: latch garante 1 frame de DOWN */
   for (int i = 0; i < B_COUNT; i++) {
-    if (now_down[i] == g_down[i]) continue;
-    g_down[i] = now_down[i];
-    inject_key(env, thiz, inject, i, now_down[i]);
+    if (g_latched[i] && !now_down[i] && !g_down[i]) now_down[i] = 1;
+    g_latched[i] = 0;
   }
+  /* RELEASES primeiro: trocar de direção nunca passa por diagonal fantasma */
+  for (int i = 0; i < B_COUNT; i++)
+    if (!now_down[i] && g_down[i]) {
+      g_down[i] = 0;
+      inject_key(env, thiz, inject, i, 0);
+    }
+  for (int i = 0; i < B_COUNT; i++)
+    if (now_down[i] && !g_down[i]) {
+      g_down[i] = 1;
+      inject_key(env, thiz, inject, i, 1);
+    }
+}
+
+/* Chamado pelo dreno de eventos do loop principal: um botão que desceu e subiu
+ * entre dois polls de 30 Hz deixa o latch marcado e vira um toque completo no
+ * próximo frame — sem isso, troca de herói (L/R) às vezes "não pegava". */
+void ocean_input_notify_event(const void *sdl_event) {
+  const SDL_Event *ev = (const SDL_Event *)sdl_event;
+  if (!ev || ev->type != SDL_CONTROLLERBUTTONDOWN) return;
+  for (int i = 0; i < B_COUNT; i++)
+    if (g_sdl_button[i] != SDL_CONTROLLER_BUTTON_INVALID &&
+        (int)g_sdl_button[i] == (int)ev->cbutton.button) {
+      g_latched[i] = 1;
+      return;
+    }
 }
 
 int ocean_input_exit_requested(void) {

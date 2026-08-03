@@ -7257,7 +7257,10 @@ int main(int argc, char **argv) {
     jni_poll_java_callbacks(env);
     opensles_shim_pump_callbacks();
     /* bombeia eventos SDL (foco/janela) p/ o input do Unity não esfomear */
-    SDL_Event ev; while (SDL_PollEvent(&ev)) {}
+    SDL_Event ev; while (SDL_PollEvent(&ev)) {
+      extern void ocean_input_notify_event(const void *);
+      ocean_input_notify_event(&ev);   /* toque curto não some entre polls */
+    }
     /* AUTOTAP: a cada ~90 frames, manda DOWN; ~3 frames depois, UP (1 "toque") */
     if (tapkey && inject && f > 120) {
       int phase = f % 90;
@@ -7278,6 +7281,36 @@ int main(int argc, char **argv) {
       }
     }
     if (gamepad_on) gp_frame_end();  /* snapshot p/ edge-detect do GetButtonDown/Up */
+    /* Pressão de memória pelo FLUXO ANDROID: quando MemAvailable aperta, o
+     * Android real manda onLowMemory -> nativeLowMemory e a Unity solta
+     * caches/bundles. GC forçado direto crashou no campo (muOS ~60s). */
+    if (f % 150 == 0) {
+      static long lowmem_kb = -1; static int lowmem_armed = 1;
+      static void *lowmem_fn; static int lowmem_fn_init;
+      if (lowmem_kb < 0) {
+        const char *v = getenv("OCEAN_LOWMEM_KB");
+        lowmem_kb = v ? atol(v) : 70000;
+      }
+      if (lowmem_kb > 0) {
+        long avail = -1; FILE *mi = fopen("/proc/meminfo", "r");
+        if (mi) { char ln[128];
+          while (fgets(ln, sizeof ln, mi))
+            if (!strncmp(ln, "MemAvailable:", 13)) { avail = atol(ln + 13); break; }
+          fclose(mi);
+        }
+        if (avail > 0) {
+          if (!lowmem_fn_init) { lowmem_fn = jni_find_native("nativeLowMemory"); lowmem_fn_init = 1; }
+          if (lowmem_armed && avail < lowmem_kb && lowmem_fn) {
+            fprintf(stderr, "[LOWMEM] MemAvailable=%ldkB < %ldkB -> nativeLowMemory (f=%d)\n",
+                    avail, lowmem_kb, f); fflush(stderr);
+            ((void (*)(void *, void *))lowmem_fn)(env, &thiz);
+            lowmem_armed = 0;
+          } else if (!lowmem_armed && avail > lowmem_kb + lowmem_kb / 2) {
+            lowmem_armed = 1;   /* re-arma quando a pressão passa */
+          }
+        }
+      }
+    }
     if (g_hc_verbose && f % 60 == 0) {
       fprintf(stderr, "[render %d]\n", f);
       dbg_sync();

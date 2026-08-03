@@ -1,5 +1,27 @@
 # Changelog — Oceanhorn: Chronos Dungeon (NextOS Ports)
 
+## v1.0.4 (Universal) — 03/08/2026
+
+Segunda rodada de logs de campo. Obrigado de novo, testadores — os três
+relatos viraram três correções.
+
+### Corrigido
+- **Crash aos ~60 segundos (muOS, e provável nos demais)**: era o nosso GC
+  periódico forçado da v1.0.3 — o log de campo mostra o SIGSEGV logo após a
+  "limpeza". Removido. A pressão de memória agora usa o caminho Android
+  legítimo: quando `MemAvailable` aperta, o port chama `nativeLowMemory` — o
+  mesmo sinal que o Android real manda — e a Unity solta caches por conta.
+- **Imagem borrada (dArkOSRE)**: era o teto de textura 384. Com o RGBA4444 o
+  teto volta a 512, que gasta MENOS RAM que o 384 em 32-bit e fica nítido.
+- **Direção "presa" (anda pra cima sozinho)**: a histerese do analógico
+  travava com stick gasto (soltava só abaixo de 0,22; um stick descansando em
+  0,25 mantinha a direção engajada para sempre). Novos limiares 0,40/0,30, e
+  as trocas de direção agora injetam o RELEASE antes do PRESS — sem diagonal
+  fantasma.
+- **Toque rápido perdido (trocar de herói "não pegava")**: um aperto mais
+  curto que um frame de 30 Hz caía entre dois polls e sumia. Os eventos do SDL
+  agora alimentam um latch que garante o toque no frame seguinte.
+
 ## v1.0.3 (Universal) — 03/08/2026
 
 Rodar em 1 GB de verdade — por economia no binário, nunca mexendo no sistema
