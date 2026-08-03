@@ -26,6 +26,21 @@ detecção de capacidade, mas ainda **não** têm prova física — não os decl
 validados até alguém rodar.
 
 
+
+## Apoie este trabalho / Support this work
+
+Fazer esses ports custa tempo e dinheiro de verdade. Se curte o resultado:
+
+- 💗 **GitHub Sponsors**: [github.com/sponsors/NextOs-Ports](https://github.com/sponsors/NextOs-Ports)
+- ☕ **Ko-fi** (PayPal/cartão): [ko-fi.com/nextos](https://ko-fi.com/nextos)
+- 🇧🇷 **PIX**: [livepix.gg/nextos](https://livepix.gg/nextos)
+
+## Comunidade / Community
+
+Dúvidas, relatos de bug, ajuda pra rodar o port e novidades dos próximos:
+
+💬 **Discord:** [discord.gg/DHfY62eDNN](https://discord.gg/DHfY62eDNN)
+
 ### Capturas
 
 | R36S / ArkOS (640×480) | NextOS Elite / Mali-450 (1280×720) |
