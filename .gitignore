@@ -10,6 +10,8 @@ libil2cpp.so
 libmain.so
 *.so
 
+!nxextract.py
+!nxextract-ui
 # artefatos de build e capturas de bring-up
 oceanhorn
 oceanhorn-universal

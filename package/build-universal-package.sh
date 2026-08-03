@@ -32,6 +32,13 @@ mkdir -p "$OUT_DIR" "$STAGE/oceanhorn/userdata" "$STAGE/oceanhorn/gamedata"
 install -m 755 "$PORT_DIR/$NAME.sh"        "$STAGE/$NAME.sh"
 install -m 755 "$PORT_DIR/run.sh"          "$STAGE/oceanhorn/run.sh"
 install -m 755 "$BIN"                      "$STAGE/oceanhorn/oceanhorn-universal"
+# NXExtract vendorizado: BYO-data transacional na primeira execução.
+for nx in extractor.json run-extractor.sh nxextract-runtime-env.sh           nxextract.py nxextract-ui nxextract-version.txt; do
+  [ -f "$PORT_DIR/$nx" ] || { echo "falta $nx (stack NXExtract)" >&2; exit 1; }
+  install -m 755 "$PORT_DIR/$nx" "$STAGE/oceanhorn/$nx"
+done
+mkdir -p "$STAGE/oceanhorn/licenses"
+install -m 644 "$PORT_DIR/licenses/NXExtract-MIT.txt" "$STAGE/oceanhorn/licenses/" 2>/dev/null || true
 for doc in README.md LICENSE NOTICE.md INSTALLATION.md CHANGELOG.md; do
   [ -f "$PORT_DIR/$doc" ] && install -m 644 "$PORT_DIR/$doc" "$STAGE/oceanhorn/$doc"
 done
@@ -42,8 +49,11 @@ Este pacote NÃO contém o jogo.
 Coloque aqui, a partir da sua cópia legal do APK do Oceanhorn: Chronos Dungeon
 (com.FDGEntertainment.OceanhornChronosDungeon.gp, 4.0b54, arm64-v8a):
 
-  libunity.so, libil2cpp.so, libmain.so   -> ports/oceanhorn/
-  a árvore assets/bin/Data                -> ports/oceanhorn/bin/Data
+  o próprio APK/APKM/XAPK, com o nome que ele tiver.
+
+Na primeira execução o NXExtract identifica a versão pelo CONTEÚDO (não pelo
+nome do arquivo), valida ABI/tamanhos/hashes e instala os dados de forma
+transacional. Seu arquivo original nunca é apagado.
 
 Os saves ficam em ports/oceanhorn/userdata e nunca são apagados por uma
 atualização do port.

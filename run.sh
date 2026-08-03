@@ -87,6 +87,48 @@ if [ -n "$old_pids" ]; then
     { echo "ABORTO: instância viva ($remaining)"; exit 1; }
 fi
 
+# ---- NXExtract: dados BYO validados/instalados de forma transacional ----
+# A UI usa SDL/EGL/GLES do firmware (nxextract-runtime-env.sh cuida do escopo);
+# o arquivo legal do usuário nunca é apagado; dados antigos válidos são adotados.
+${ESUDO:-} chmod +x "$GAMEDIR/run-extractor.sh" "$GAMEDIR/nxextract-runtime-env.sh"   "$GAMEDIR/nxextract.py" "$GAMEDIR/nxextract-ui" 2>/dev/null || true
+if [ -f "$GAMEDIR/extractor.json" ] && [ -x "$GAMEDIR/run-extractor.sh" ]; then
+  # Instalação legada (fase 1) tinha as libs no root do port. Normaliza para o
+  # layout lib/ ANTES do extrator, para a adoção validar por hash em vez de
+  # pedir o APK de novo a quem já tem tudo instalado.
+  if [ ! -d "$GAMEDIR/lib" ] && [ -f "$GAMEDIR/libunity.so" ] &&
+     [ -d "$GAMEDIR/bin/Data" ]; then
+    mkdir -p "$GAMEDIR/lib"
+    for _so in libmain libunity libil2cpp; do
+      [ -f "$GAMEDIR/$_so.so" ] && cp -f "$GAMEDIR/$_so.so" "$GAMEDIR/lib/$_so.so"
+    done
+    echo "[run] instalação legada normalizada para lib/ (adoção)"
+  fi
+  nx_firmware_libraries=
+  if [ -n "${controlfolder:-}" ]; then
+    for _d in "$controlfolder/libs" "$controlfolder/libs.aarch64"; do
+      [ -d "$_d" ] &&
+        nx_firmware_libraries=${nx_firmware_libraries:+$nx_firmware_libraries:}$_d
+    done
+  fi
+  NXEXTRACT_GAME_DIR=$GAMEDIR   NXEXTRACT_FIRMWARE_LIBRARY_PATH=$nx_firmware_libraries     "$GAMEDIR/run-extractor.sh" || {
+    echo "ABORTO: preparação dos dados do jogo falhou ($?)"
+    echo "Coloque seu APK legal do Oceanhorn em $GAMEDIR/gamedata/ e tente de novo."
+    exit 1
+  }
+  # so_load abre "libunity.so" relativo ao GAMEDIR; o payload instalado fica em
+  # lib/. Materializa cópias no root (symlink não existe em FAT — errno 524).
+  for _so in libmain libunity libil2cpp; do
+    if [ -f "$GAMEDIR/lib/$_so.so" ] &&
+       ! cmp -s "$GAMEDIR/lib/$_so.so" "$GAMEDIR/$_so.so" 2>/dev/null; then
+      cp -f "$GAMEDIR/lib/$_so.so" "$GAMEDIR/$_so.so"
+    fi
+  done
+  if [ "${OCEAN_EXTRACTOR_ONLY:-0}" = 1 ]; then
+    echo "[run] validação do extrator concluída"
+    exit 0
+  fi
+fi
+
 # As libs do FIRMWARE (SDL2/EGL/GLES) vêm primeiro; as privadas do jogo ficam no
 # fim do escopo para nunca sequestrar o driver do aparelho.
 _libs="/usr/local/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:/usr/lib:/lib"
