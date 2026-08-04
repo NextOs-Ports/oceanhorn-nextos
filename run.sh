@@ -33,15 +33,6 @@ fi
 export OCEAN_GAMEDIR=$GAMEDIR
 cd "$GAMEDIR" || { echo "sem $GAMEDIR"; exit 1; }
 
-# Ajustes do usuário/testador ficam em userdata/, que a atualização do port
-# nunca sobrescreve. Serve para experimentar um knob (ver README) sem editar
-# nenhum arquivo distribuído. Só exporta o que o próprio arquivo definir.
-if [ -r "$GAMEDIR/userdata/ocean-env.sh" ]; then
-  # shellcheck disable=SC1091
-  . "$GAMEDIR/userdata/ocean-env.sh"
-  echo "[run] userdata/ocean-env.sh aplicado"
-fi
-
 # A trava acompanha o processo pelo descritor 9 (inclusive após exec). Um segundo
 # launcher aborta antes de tocar na instância que já possui Mali/KMS/fbdev.
 exec 9>"$GAMEDIR/.oceanhorn.lock"
@@ -52,6 +43,14 @@ flock -n 9 || { echo "ABORTO: outro launcher do Oceanhorn já está ativo"; exit
 [ -s "$GAMEDIR/launcher.log" ] &&
   mv -f -- "$GAMEDIR/launcher.log" "$GAMEDIR/launcher.prev.log" 2>/dev/null
 exec > "$GAMEDIR/launcher.log" 2>&1
+# Ajustes do usuário/testador ficam em userdata/, que a atualização do port
+# nunca sobrescreve. Serve para experimentar um knob (ver README) sem editar
+# nenhum arquivo distribuído. Só exporta o que o próprio arquivo definir.
+if [ -r "$GAMEDIR/userdata/ocean-env.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$GAMEDIR/userdata/ocean-env.sh"
+  echo "[run] userdata/ocean-env.sh aplicado"
+fi
 echo "=== Oceanhorn Chronos Dungeon | $(date -Is 2>/dev/null || date) ==="
 
 # Erro fatal: registra no log E mostra na tela do aparelho (CUR_TTY), porque o

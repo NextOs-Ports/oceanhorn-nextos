@@ -210,6 +210,32 @@ static void run_runnable(void *env, void *runnable);
 int jni_is_run_method(void *o);
 int jni_is_empty_args(void *o);
 
+/* O objeto ConsentInformation que a fábrica do UMP devolve. Sem ele, o cliente
+ * C# guarda null e estoura NullReferenceException no primeiro uso — foi
+ * exatamente o que o log de campo mostrou logo após "Try open consent form". */
+static char g_ump_consent_info_obj;
+/* Os builders do UMP (ConsentRequestParameters$Builder, ConsentDebugSettings$
+ * Builder). Um objeto só basta: builder devolve ele mesmo a cada set/add, e o
+ * build() devolve o parâmetro que só volta para nós em requestConsentInfoUpdate. */
+static char g_ump_builder_obj;
+/* Todo o stack de anúncios do jogo é Java do Play Services: UMP (consentimento),
+ * GoogleMobileAds e as mediações. Nada disso existe no so-loader. Devolver NULL
+ * na criação desses objetos é o que produz a NullReferenceException — primeiro
+ * no consentimento, depois no pedido do intersticial. Um objeto do shim deixa o
+ * cliente C# montar o pedido normalmente e chegar até o ponto em que o próprio
+ * jogo conclui "não há anúncio" e segue a cutscene. */
+static int ump_is_class(const char *name) {
+  if (!name) return 0;
+  return !strncmp(name, "com/google/android/ump/", 23) ||
+         !strncmp(name, "com/google/unity/ads/", 21) ||
+         !strncmp(name, "com/google/android/gms/ads/", 27) ||
+         !strncmp(name, "com/google/ads/mediation/", 25) ||
+         !strcmp(name, "android/os/Bundle");
+}
+/* O callback UnityInterstitialAdCallback que o jogo passa ao construir o
+ * com.google.unity.ads.Interstitial. É por ele que o pedido termina. */
+static void *g_ads_interstitial_cb;
+
 /* ---- SharedPreferences persistente ----
  * PlayerPrefs no Android usa SharedPreferences. A tabela anterior existia apenas
  * em RAM, portanto opções/progresso escritos por esse caminho sumiam ao sair.
@@ -912,9 +938,26 @@ static const char *class_name_for(void *clazz) {
   pthread_mutex_unlock(&g_classreg_mutex);
   return result;
 }
+/* OCEAN_JNITRACE=1: rastro leve em stderr das buscas de classe/método. Serve
+ * para descobrir QUAL chamada Java um SDK ausente faz antes de devolver null —
+ * sem ele a investigação vira chute. Volume limitado para não afogar o log. */
+static int jni_trace_on(void) {
+  static int on = -1;
+  if (on < 0) on = getenv("OCEAN_JNITRACE") ? 1 : 0;
+  return on;
+}
+static void jni_trace(const char *what, const char *a, const char *b) {
+  static int n;
+  if (!jni_trace_on() || n >= 4000) return;
+  n++;
+  fprintf(stderr, "[JNIT] %s %s%s%s\n", what, a ? a : "?",
+          b ? " " : "", b ? b : "");
+}
+
 static void *jni_FindClass(void *env, const char *name) {
   (void)env;
   debugPrintf("jni_shim: FindClass(%s)\n", name);
+  jni_trace("FindClass", name, NULL);
   /* o proxy criado logo após FindClass(Choreographer$FrameCallback) é o FrameCallback */
   g_next_proxy_is_framecb = (name && strstr(name, "Choreographer$FrameCallback")) ? 1 : 0;
   g_next_proxy_is_resultcb =
@@ -927,6 +970,7 @@ static void *jni_GetMethodID(void *env, void *clazz, const char *name,
   (void)env;
   (void)clazz;
   debugPrintf("jni_shim: GetMethodID(%s, %s)\n", name, sig);
+  jni_trace("GetMethodID", name, sig);
   void *mid = reg_mid(name, sig);
   if (name && strcmp(name, "onResult") == 0) g_onresult_mid = mid;
   return mid;
@@ -937,6 +981,7 @@ static void *jni_GetStaticMethodID(void *env, void *clazz, const char *name,
   (void)env;
   (void)clazz;
   debugPrintf("jni_shim: GetStaticMethodID(%s, %s)\n", name, sig);
+  jni_trace("GetStaticMethodID", name, sig);
   return reg_mid(name, sig);
 }
 
@@ -1137,6 +1182,15 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
   (void)env;
   const char *nm = mid_name(methodID);
   debugPrintf("jni_shim: CallObjectMethod(%s)\n", nm ? nm : "?");
+  /* Builder do UMP: cada set/add devolve o próprio builder, e build() devolve o
+     parâmetro pronto. Um objeto só cobre a cadeia inteira. */
+  if (obj == (void *)&g_ump_builder_obj) {
+    /* Builder devolve ele mesmo; getter de String devolve String (devolver o
+       objeto onde o C# espera texto quebra a marshalling). */
+    const char *msig = mid_sig(methodID);
+    if (msig && strstr(msig, ")Ljava/lang/String;")) return make_jstring("");
+    return (void *)&g_ump_builder_obj;
+  }
   static int fake_obj;
   if (nm) {
     /* AndroidJavaObject converte System.String pelo fluxo nativo do Unity:
@@ -1494,6 +1548,15 @@ static void *jni_CallObjectMethod(void *env, void *obj, void *methodID, ...) {
 static void *jni_CallObjectMethodA(void *env, void *obj, void *methodID, const jvalue *args) {
   (void)env;
   const char *nm = mid_name(methodID);
+  /* Builder do UMP: cada set/add devolve o próprio builder, e build() devolve o
+     parâmetro pronto. Um objeto só cobre a cadeia inteira. */
+  if (obj == (void *)&g_ump_builder_obj) {
+    /* Builder devolve ele mesmo; getter de String devolve String (devolver o
+       objeto onde o C# espera texto quebra a marshalling). */
+    const char *msig = mid_sig(methodID);
+    if (msig && strstr(msig, ")Ljava/lang/String;")) return make_jstring("");
+    return (void *)&g_ump_builder_obj;
+  }
   if (nm && strcmp(nm, "getBytes") == 0) {
     if (!is_jstring(obj)) return barr_new(0);
     const char *text = resolve_jstring(obj);
@@ -1647,10 +1710,83 @@ static volatile int g_gles_warn_skip;
 static volatile int g_internet_deny_arm;  /* ver NewStringUTF/CallIntMethod (INTERNET denied) */
 
 /* CallBooleanMethod V (index 38) — lê args via va_list (variante que il2cpp usa) */
+/* ===== UMP (Google User Messaging Platform) — o portão da caverna =====
+ * Ao trocar de nível o jogo pede um anúncio intersticial, e antes disso exige o
+ * formulário de consentimento de privacidade. Esse formulário é UI do Play
+ * Services: no so-loader ele nunca abre, e o pedido de consentimento nunca
+ * completa (o marcador "Consent information loaded" jamais aparece no log),
+ * porque quem o completaria são listeners Java que não existem aqui. O jogo
+ * então fica parado na cutscene — tela preta com som, para sempre.
+ *
+ * O jogo consulta o status de consentimento de forma SÍNCRONA antes de mostrar
+ * o anúncio. Respondendo essa consulta, ele segue o PRÓPRIO caminho de "não há
+ * anúncio para mostrar" (marcador "Interstitial ad done and not successfull!")
+ * e a cutscene continua. Nada é forçado: só deixamos de mentir que o
+ * consentimento está pendente numa plataforma onde ele não existe.
+ *
+ * Constantes do SDK: ConsentStatus UNKNOWN=0 NOT_REQUIRED=1 REQUIRED=2
+ * OBTAINED=3; PrivacyOptionsRequirementStatus UNKNOWN=0 NOT_REQUIRED=1
+ * REQUIRED=2. Ajustáveis por ambiente para conferir no aparelho sem rebuild. */
+static int ump_env_int(const char *var, int def) {
+  const char *v = getenv(var);
+  return v && *v ? atoi(v) : def;
+}
+
+/* Chama um método sem argumentos num AndroidJavaProxy pela ponte do
+ * ReflectionHelper (a mesma que o shim já usa para Runnable.run). É assim que
+ * o listener de sucesso do UMP é entregue: no Android real quem o chama é o
+ * SDK depois de consultar a rede; aqui a resposta é imediata e local. */
+static void ump_invoke_listener_args(void *env, void *proxy, const char *method,
+                                    void *args_array) {
+  if (!proxy || !method) return;
+  long h = proxy_handle(proxy);
+  if (!h) { fprintf(stderr, "[UMP] %s sem handle de proxy\n", method); return; }
+  if (!proxy_has_interface(proxy, PROXY_BRIDGE_REFLECTION)) {
+    fprintf(stderr, "[UMP] %s: proxy não é da ponte ReflectionHelper\n", method);
+    return;
+  }
+  void *invoke = jni_find_native("nativeProxyInvoke");
+  if (!invoke) { fprintf(stderr, "[UMP] %s sem nativeProxyInvoke\n", method); return; }
+  fprintf(stderr, "[UMP] chamando %s (handle=%ld)\n", method, h);
+  ((void *(*)(void *, void *, long, void *, void *))invoke)(
+      env, class_for("com/unity3d/player/ReflectionHelper"), h,
+      make_jstring(method),
+      args_array ? args_array : (void *)&g_empty_args_sentinel);
+}
+static void ump_invoke_listener(void *env, void *proxy, const char *method) {
+  ump_invoke_listener_args(env, proxy, method, NULL);
+}
+
+static int ump_int_answer(const char *nm, int *out) {
+  if (!strcmp(nm, "getConsentStatus")) {
+    *out = ump_env_int("OCEAN_UMP_CONSENT_STATUS", 3);   /* OBTAINED */
+  } else if (!strcmp(nm, "getPrivacyOptionsRequirementStatus")) {
+    *out = ump_env_int("OCEAN_UMP_PRIVACY_REQ", 1);      /* NOT_REQUIRED */
+  } else {
+    return 0;
+  }
+  static int logged;
+  if (logged < 8) { logged++;
+    debugPrintf("[UMP] %s -> %d (sem Play Services: consentimento resolvido)\n",
+                nm, *out);
+    fprintf(stderr, "[UMP] %s -> %d\n", nm, *out); }
+  return 1;
+}
+
 static unsigned char jni_CallBooleanMethodV(void *env, void *obj,
                                             void *methodID, va_list ap) {
   const char *nm = mid_name(methodID);
   if (nm) {
+    /* UMP: pode pedir anúncio (o jogo decide sozinho que não há nenhum) e não
+       existe formulário de consentimento para abrir. Ver bloco acima. */
+    if (!strcmp(nm, "canRequestAds")) {
+      static int l; if (l++ < 4) fprintf(stderr, "[UMP] canRequestAds -> 1\n");
+      return (unsigned char)ump_env_int("OCEAN_UMP_CAN_REQUEST_ADS", 1);
+    }
+    if (!strcmp(nm, "isConsentFormAvailable")) {
+      static int l; if (l++ < 4) fprintf(stderr, "[UMP] isConsentFormAvailable -> 0\n");
+      return (unsigned char)ump_env_int("OCEAN_UMP_FORM_AVAILABLE", 0);
+    }
     if (obj == &g_fmod_device_obj && strcmp(nm, "isRunning") == 0)
       return __atomic_load_n(&g_fmod_should_run, __ATOMIC_ACQUIRE) ? 1 : 0;
     /* 🔊 PackageManager.hasSystemFeature(...) -> true.
@@ -1727,6 +1863,10 @@ static unsigned char jni_CallBooleanMethodA(void *env, void *obj,
   (void)env;
   (void)obj;
   const char *nm = mid_name(methodID);
+  if (nm && !strcmp(nm, "canRequestAds"))
+    return (unsigned char)ump_env_int("OCEAN_UMP_CAN_REQUEST_ADS", 1);
+  if (nm && !strcmp(nm, "isConsentFormAvailable"))
+    return (unsigned char)ump_env_int("OCEAN_UMP_FORM_AVAILABLE", 0);
   if (nm && strcmp(nm, "contains") == 0)
     return prefs_contains(args ? resolve_jstring(args[0].l) : "") ? 1 : 0;
   if (nm && strcmp(nm, "commit") == 0) return prefs_save() ? 1 : 0;
@@ -1761,6 +1901,8 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
     return 8;
   if (obj == (void *)&g_message_sentinel && nm && strcmp(nm, "getWhat") == 0)
     return g_message_what;
+  /* UMP: status de consentimento consultado antes do anúncio intersticial. */
+  { int ump; if (nm && ump_int_answer(nm, &ump)) return (jint)ump; }
   /* org.fmod.FMODAudioDevice — qualquer método int/bool (start/isRunning/init...) = sucesso */
   if (obj == &g_fmod_device_obj) { debugPrintf("jni_shim: FMODAudioDevice.%s -> 1\n", nm?nm:"?"); return 1; }
   if (nm) {
@@ -1875,6 +2017,7 @@ static jint jni_CallIntMethodA(void *env, void *obj, void *methodID,
   if (obj == (void *)&g_google_token_result_sentinel && nm &&
       strcmp(nm, "getStatusCode") == 0)
     return 8;
+  { int ump; if (nm && ump_int_answer(nm, &ump)) return (jint)ump; }
   return 0;
 }
 
@@ -1882,6 +2025,21 @@ static jint jni_CallIntMethodA(void *env, void *obj, void *methodID,
 static void jni_CallVoidMethodV(void *env, void *obj, void *methodID, va_list ap) {
   const char *nm = mid_name(methodID);
   debugPrintf("jni_shim: CallVoidMethod(%s)\n", nm ? nm : "?");
+  /* UMP: requestConsentInfoUpdate(activity, params, sucesso, falha). No Android
+     real o SDK chama um dos dois listeners; sem eles o pedido do jogo nunca
+     completa (o marcador "Consent information loaded" não sai do lugar) e a
+     cutscene fica esperando para sempre. Entregamos o de SUCESSO — o estado que
+     o jogo vai ler em seguida é "consentimento resolvido". */
+  if (nm && !strcmp(nm, "requestConsentInfoUpdate")) {
+    (void)va_arg(ap, void *);                  /* activity */
+    (void)va_arg(ap, void *);                  /* ConsentRequestParameters */
+    void *on_success = va_arg(ap, void *);
+    void *on_failure = va_arg(ap, void *);
+    (void)on_failure;
+    fprintf(stderr, "[UMP] requestConsentInfoUpdate -> sucesso imediato\n");
+    ump_invoke_listener(env, on_success, "onConsentInfoUpdateSuccess");
+    return;
+  }
   if (nm && strcmp(nm, "apply") == 0) {
     if (!prefs_save()) debugPrintf("[PREFS] Editor.apply falhou\n");
     return;
@@ -1976,6 +2134,33 @@ static void jni_CallVoidMethod(void *env, void *obj, void *methodID, ...) {
 static void jni_CallVoidMethodA(void *env, void *obj, void *methodID, const jvalue *args) {
   const char *nm = mid_name(methodID);
   debugPrintf("jni_shim: CallVoidMethodA(%s)\n", nm ? nm : "?");
+  /* UMP — ver bloco do requestConsentInfoUpdate na variante V. O Unity 2022
+     chama por ESTA variante (args em jvalue[]), então o tratamento vive nas
+     duas. args: 0=activity 1=params 2=onSuccess 3=onFailure */
+  if (nm && !strcmp(nm, "requestConsentInfoUpdate")) {
+    fprintf(stderr, "[UMP] requestConsentInfoUpdate(A) -> sucesso imediato\n");
+    ump_invoke_listener(env, args ? args[2].l : NULL,
+                        "onConsentInfoUpdateSuccess");
+    return;
+  }
+  /* Rastro de tudo que o jogo chama no stack de anúncios: sem Play Services
+     estes nomes são a única forma de saber onde o pedido pararia. */
+  if (obj == (void *)&g_ump_builder_obj && nm) {
+    static int n;
+    if (n++ < 40)
+      fprintf(stderr, "[ADS] void %s %s\n", nm, mid_sig(methodID));
+  }
+  /* Sem rede nem Play Services o anúncio não carrega. No Android real o SDK
+     responde pelo callback de FALHA; sem essa resposta o pedido do jogo fica
+     pendente e a cutscene nunca continua. Entregamos a falha. */
+  if (nm && g_ads_interstitial_cb &&
+      (!strcmp(nm, "loadAd") || !strcmp(nm, "loadInterstitialAd"))) {
+    fprintf(stderr, "[ADS] %s -> onInterstitialAdFailedToLoad\n", nm);
+    ump_invoke_listener_args(env, g_ads_interstitial_cb,
+                             "onInterstitialAdFailedToLoad",
+                             oarr_new(1, &g_ump_builder_obj));
+    return;
+  }
   if (nm && strcmp(nm, "apply") == 0) {
     if (!prefs_save()) debugPrintf("[PREFS] Editor.apply(A) falhou\n");
     return;
@@ -2052,6 +2237,14 @@ static void *jni_CallStaticObjectMethodV(void *env, void *clazz,
   /* Environment.getExternalStorageState() -> "mounted" (senão o jogo acha o storage indisponível
      e mostra "low on storage" ao entrar no Single Player). */
   if (nm && !strcmp(nm, "getExternalStorageState")) return make_jstring("mounted");
+  /* UMP: UserMessagingPlatform.getConsentInformation(activity) precisa devolver
+     um objeto — null aqui vira a NullReferenceException do consent form. */
+  if (nm && !strcmp(nm, "getConsentInformation")) {
+    static int once;
+    if (!once) { once = 1;
+      fprintf(stderr, "[UMP] getConsentInformation -> objeto do shim\n"); }
+    return &g_ump_consent_info_obj;
+  }
   /* encode/decode (SaveManager): IDENTIDADE — devolve a própria string de entrada. */
   if (nm && (!strcmp(nm, "encode") || !strcmp(nm, "decode"))) {
     void *arg0 = va_arg(ap, void *);
@@ -2112,6 +2305,12 @@ static void *jni_CallStaticObjectMethod(void *env, void *clazz, void *methodID, 
 static void *jni_CallStaticObjectMethodA(void *env, void *clazz, void *methodID, const jvalue *args) {
   (void)env;
   const char *nm = mid_name(methodID);
+  if (nm && !strcmp(nm, "getConsentInformation")) {
+    static int once;
+    if (!once) { once = 1;
+      fprintf(stderr, "[UMP] getConsentInformation(A) -> objeto do shim\n"); }
+    return &g_ump_consent_info_obj;
+  }
   /* Unity 2022 resolve AndroidJavaObject/AndroidJavaClass por ReflectionHelper.
      O Java real devolve um java.lang.reflect.Method e o player o converte com
      FromReflectedMethod. O handle persistente de reg_mid serve aos dois papéis,
@@ -3001,6 +3200,17 @@ static void *jni_NewObjectCommon(void *env, void *clazz, void *mid) {
   }
   if (clazz == class_for("android/os/Message"))
     return &g_message_sentinel;
+  /* UMP: sem Play Services não há classe Java nenhuma, e devolver NULL aqui é
+     a NullReferenceException que trava o consentimento (e, mais tarde, a
+     cutscene da caverna). Um objeto do shim deixa o cliente C# montar o
+     pedido normalmente. */
+  { const char *cn = class_name_for(clazz);
+    if (ump_is_class(cn)) {
+      static int n;
+      if (n++ < 12)
+        fprintf(stderr, "[ADS] NewObject(%s) -> objeto do shim\n", cn);
+      return &g_ump_builder_obj;
+    } }
   return NULL;
 }
 static void *jni_NewObjectV(void *env, void *clazz, void *mid, va_list ap) {
@@ -3023,6 +3233,14 @@ static void *jni_NewObjectA(void *env, void *clazz, void *mid, const jvalue *arg
   const char *class_name = class_name_for(clazz);
   if (class_name && strcmp(class_name, "java/lang/String") == 0)
     return jni_string_from_byte_array(args ? args[0].l : NULL);
+  /* Interstitial(Activity, UnityInterstitialAdCallback): guarda o callback —
+     é por ele que o pedido de anúncio do jogo termina. */
+  if (class_name && args &&
+      !strcmp(class_name, "com/google/unity/ads/Interstitial")) {
+    g_ads_interstitial_cb = args[1].l;
+    fprintf(stderr, "[ADS] callback do intersticial capturado (%p)\n",
+            g_ads_interstitial_cb);
+  }
   return jni_NewObjectCommon(env, clazz, mid);
 }
 

@@ -7436,6 +7436,10 @@ int main(int argc, char **argv) {
       }
       if (avail > 0) {
         const int pressed = lowmem_kb > 0 && avail < lowmem_kb;
+        /* A pressão pode começar logo depois de um relatório de regime calmo.
+           Sem puxar o próximo para agora, a série densa só entraria 60s depois
+           — justamente durante o carregamento que interessa registrar. */
+        if (pressed && mem_next_report > f + 150) mem_next_report = f;
         /* Curva de memória no log mesmo sem CUP_MEMLOG: a cada ~60s em regime
            normal e a cada ~5s sob pressão. É esta série que diz, no próximo
            relato de campo, o que a cena nova custa de verdade. */
