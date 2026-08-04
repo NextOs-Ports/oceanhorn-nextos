@@ -83,7 +83,15 @@ fi
 CODE_ZIP="$OUT_DIR/$NAME (Universal) v$VERSION.zip"
 rm -f "$CODE_ZIP"
 ( cd "$STAGE" && zip -rq "$CODE_ZIP" . )
-( cd "$OUT_DIR" && sha256sum "$(basename "$CODE_ZIP")" > "$(basename "$CODE_ZIP").sha256" )
+# O GitHub troca espaço e parêntese por ponto no nome do asset, então o
+# .sha256 precisa citar o nome SERVIDO — senão o `sha256sum -c` de quem baixa
+# procura um arquivo que não existe e a verificação falha por nome, com o
+# pacote intacto. Vale desde a v1.0.4, corrigido na v1.0.6.
+CODE_ZIP_SERVED=$(basename "$CODE_ZIP" | tr ' ()' '...' | sed 's/\.\{2,\}/./g')
+( cd "$OUT_DIR" &&
+  printf '%s  %s\n' \
+    "$(sha256sum "$(basename "$CODE_ZIP")" | cut -d' ' -f1)" \
+    "$CODE_ZIP_SERVED" > "$(basename "$CODE_ZIP").sha256" )
 
 if [ -n "${OCEAN_FULL_DATA_DIR:-}" ]; then
   [ -d "$OCEAN_FULL_DATA_DIR/bin/Data" ] ||
