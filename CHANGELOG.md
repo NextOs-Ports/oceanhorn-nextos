@@ -39,6 +39,19 @@ a raiz e validadas fisicamente no R36S. Obrigado aos dois relatos de campo
   expira em ~0,75 s (stick com repouso deslocado não anda mais sozinho), sonda
   de SELECT/START confere o nome do dispositivo (com dois controles, não lê
   mais o aparelho errado) e SELECT+START solta todos os botões antes de sair.
+- **Instalação completa reprovada na faxina, em firmware com `/userdata` exFAT
+  (Knulli, Batocera)** — o jogo terminava de instalar, o payload era validado e
+  gravado, e só então o extrator falhava ao apagar o próprio cache temporário:
+  `[Errno 39] Directory not empty` em `source-cache/bundle-*`, e o launcher
+  reportava erro de instalação de dados com o jogo inteiro no lugar. Em
+  sistema de arquivos montado por FUSE — exFAT, NFS, SMB — apagar arquivo que
+  ainda está aberto não remove a entrada: deixa um marcador escondido, e o
+  diretório se recusa a sair. O NXExtract 1.2.1 fecha todos os arquivos de
+  origem antes da limpeza e, se o sistema de arquivos ainda recusar, registra o
+  aviso e deixa o cache para a próxima execução em vez de abortar. Sobra de
+  cache é inofensiva; instalação boa reprovada não é. Em ext4 (ArkOS, ROCKNIX)
+  o defeito era invisível. Achado por relato contra o Horizon Chase no Knulli e
+  corrigido em todos os ports que compartilham o extrator.
 
 ### Notas
 - v1.0.4 e v1.0.5 continuam publicadas; nada de compatibilidade mudou. Dados,

@@ -19,3 +19,7 @@ package/dist/
 *.log
 *.raw
 *.tar.gz
+
+# Bytecode Python (gerado por py_compile/execucao local)
+__pycache__/
+*.pyc
