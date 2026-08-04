@@ -1,5 +1,51 @@
 # Changelog — Oceanhorn: Chronos Dungeon (NextOS Ports)
 
+## v1.0.6 (Universal) — 04/08/2026
+
+Duas causas grandes caíram nesta versão — as duas reproduzidas, rastreadas até
+a raiz e validadas fisicamente no R36S. Obrigado aos dois relatos de campo
+(dArkOSRE e MagicX Zero 28/Knulli): foram eles que fecharam o diagnóstico.
+
+### Corrigido
+- **Tela preta com som ao entrar na caverna (e em qualquer troca de nível com
+  anúncio)** — nunca foi memória. Ao trocar de nível o jogo pede um anúncio
+  intersticial, que antes exige o consentimento de privacidade do Google (UMP).
+  Nada desse Java existe fora do Android real, e o shim respondia `null` a toda
+  criação de objeto: o pedido de consentimento ficava pendente para sempre
+  (`Consent information loaded` nunca aparecia em log nenhum) e a cutscene
+  esperava eternamente. Em aparelho sem swap, o OOM killer terminava o processo
+  em ~2 minutos — o que fazia parecer falta de memória. O shim agora entrega
+  objetos reais para o stack de anúncios inteiro (UMP, GoogleMobileAds,
+  mediações), responde as consultas de consentimento e entrega os callbacks que
+  o SDK entregaria: consentimento resolvido na hora, e "anúncio falhou ao
+  carregar" quando o jogo pede um. O jogo então segue o próprio caminho — sem
+  anúncio para mostrar — e a cutscene continua.
+- **Controle "fantasma" (personagem que continua andando sozinho, ação que
+  continua repetindo)** — defeito estrutural na injeção de input, presente
+  desde a v1.0.0 em todos os aparelhos. O motor lê parte do evento DURANTE a
+  injeção e o resto DEPOIS, da fila de input (provado com contador de leituras
+  no aparelho). Todos os eventos compartilhavam um único objeto com estado
+  global: quando dois eventos saíam próximos — soltar uma diagonal, trocar de
+  direção rápido —, a leitura adiada do primeiro devolvia os campos do
+  segundo. A soltura da direção literalmente virava outro evento no meio do
+  caminho, e o jogo nunca ficava sabendo que o stick voltou ao centro. Agora
+  cada evento injetado congela os próprios campos num snapshot e os getters
+  respondem pelo evento certo. Validado no aparelho: girar e soltar o
+  analógico para o movimento imediatamente.
+- Robustez adicional do mesmo pente-fino de input: `downTime` por botão (o UP
+  de uma tecla saía carimbado com o tempo de outra), estado dos eixos
+  reafirmado periodicamente e soltura ecoada (um evento perdido numa engasgada
+  custa meio segundo, não a sessão), direção presa na faixa morta da histerese
+  expira em ~0,75 s (stick com repouso deslocado não anda mais sozinho), sonda
+  de SELECT/START confere o nome do dispositivo (com dois controles, não lê
+  mais o aparelho errado) e SELECT+START solta todos os botões antes de sair.
+
+### Notas
+- v1.0.4 e v1.0.5 continuam publicadas; nada de compatibilidade mudou. Dados,
+  saves e instalação são os mesmos — basta trocar os arquivos do port.
+- `OCEAN_INPUTLOG=1` agora também imprime os contadores de leitura de evento
+  (a instrumentação que fechou este diagnóstico).
+
 ## v1.0.5 (Universal) — 04/08/2026
 
 Terceira rodada de log de campo (R36S/dArkOSRE, tela preta com som ao entrar na

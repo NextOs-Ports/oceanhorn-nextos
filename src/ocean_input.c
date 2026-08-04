@@ -294,8 +294,20 @@ static void inject_key(void *env, void *thiz, void *inject, int idx, int down,
      tivesse descido depois — par malformado, do ponto de vista de quem lê. */
   if (down) g_down_time[idx] = now;
   g_hk_inject.downTime = g_down_time[idx] ? g_down_time[idx] : now;
+  extern unsigned g_keyev_reads;
+  unsigned reads_before = g_keyev_reads;
   int r = ((int (*)(void *, void *, void *, int))inject)(env, thiz,
                                                          hk_keyevent_object(), 0);
+  /* Se o motor lê os campos DURANTE a chamada, o contador sobe aqui. Se não
+     subir, a leitura é adiada e todos os eventos do mesmo quadro acabam lendo
+     o último estado — um evento por quadro sobrevive e os outros somem. */
+  static int probe;
+  if (g_verbose && probe < 6) {
+    probe++;
+    fprintf(stderr, "[INJPROBE] key %d %s: leituras %u -> %u (%s)\n",
+            g_keycode[idx], down ? "DOWN" : "UP", reads_before, g_keyev_reads,
+            g_keyev_reads > reads_before ? "SINCRONA" : "ADIADA");
+  }
   if (g_verbose)
     fprintf(stderr, "[OCEANPAD] key %d %s%s%s -> aceito=%d\n",
             g_keycode[idx], down ? "DOWN" : "UP", origem ? " " : "",
@@ -312,8 +324,17 @@ static void inject_motion(void *env, void *thiz, void *inject) {
   long now = ocean_now_ms();
   g_ocean_motion.eventTime = now;
   g_ocean_motion.downTime = now;
+  extern unsigned g_motionev_reads;
+  unsigned reads_before = g_motionev_reads;
   int r = ((int (*)(void *, void *, void *, int))inject)(env, thiz,
                                                          ocean_motionevent_object(), 0);
+  static int probe;
+  if (g_verbose && probe < 4) {
+    probe++;
+    fprintf(stderr, "[INJPROBE] motion: leituras %u -> %u (%s)\n",
+            reads_before, g_motionev_reads,
+            g_motionev_reads > reads_before ? "SINCRONA" : "ADIADA");
+  }
   if (g_verbose)
     fprintf(stderr, "[OCEANPAD] axes L(%.2f,%.2f) R(%.2f,%.2f) T(%.2f,%.2f) H(%.0f,%.0f) -> aceito=%d\n",
             g_ocean_motion.axis[0], g_ocean_motion.axis[1],
@@ -380,8 +401,24 @@ void ocean_input_poll(void *env, void *thiz, void *inject) {
   /* SELECT/START de pads sem esses botões físicos (RG351/R36S). */
   ocean_apply_th_buttons(now_down);
 
-  /* Movimento do stick pelo mesmo caminho Android comprovado do d-pad. */
-  stick_to_dpad(ax[0], ax[1], now_down);
+  /* Movimento do stick pelo mesmo caminho Android comprovado do d-pad.
+     OCEAN_NO_DPAD_KEYS=1 corta ESTE caminho e deixa só os eixos: serve para
+     provar, em uma partida, por onde o jogo realmente move o personagem. */
+  if (!env_int("OCEAN_NO_DPAD_KEYS", 0))
+    stick_to_dpad(ax[0], ax[1], now_down);
+
+  /* Quantas vezes o motor leu cada tipo de evento até agora. Se as leituras de
+     eixo ficarem em zero durante o jogo, o movimento não vem dos eixos. */
+  if (g_verbose) {
+    extern unsigned g_keyev_reads, g_motionev_reads;
+    static int next;
+    static int frame;
+    if (frame++ >= next) {
+      next = frame + 150;
+      fprintf(stderr, "[INJPROBE] leituras acumuladas: tecla=%u eixo=%u\n",
+              g_keyev_reads, g_motionev_reads);
+    }
+  }
 
   /*
    * Padrão NextOS/PortMaster: SELECT+START volta ao frontend. O pedido é
@@ -425,7 +462,11 @@ void ocean_input_poll(void *env, void *thiz, void *inject) {
   static int resend_countdown;
   const int resend_every = env_int("OCEAN_AXIS_RESEND", 15);
   int axes_changed = memcmp(ax, g_ocean_motion.axis, sizeof ax) != 0;
-  if (axes_changed || (resend_every > 0 && --resend_countdown <= 0)) {
+  /* OCEAN_NO_MOTION=1 corta o caminho de EIXO por inteiro (só teclas). Com o
+     OCEAN_NO_DPAD_KEYS acima, os dois knobs isolam qual dos dois caminhos
+     duplicados do d-pad prende a direção no Rewired. */
+  if (!env_int("OCEAN_NO_MOTION", 0) &&
+      (axes_changed || (resend_every > 0 && --resend_countdown <= 0))) {
     memcpy(g_ocean_motion.axis, ax, sizeof ax);
     resend_countdown = resend_every;
     inject_motion(env, thiz, inject);
@@ -472,16 +513,16 @@ void ocean_input_notify_event(const void *sdl_event) {
       g_press_open[i] = 1;
     } else if (g_press_open[i]) {
       /*
-       * Antes, QUALQUER DOWN entre dois polls virava um toque garantido — e um
-       * repique de contato (DOWN+UP em poucos milissegundos, comum em pad
-       * gasto) é indistinguível de um toque rápido de verdade nesse critério.
-       * O latch transformava esse ruído elétrico em um toque completo: o
-       * "toque fantasma". Medindo a duração pelo próprio carimbo do SDL, o
-       * repique é descartado e o toque humano (>= dezenas de ms) continua
-       * garantido.
+       * ⚠️ O carimbo de tempo do SDL é o do LOTE de processamento, não o do
+       * kernel: todo toque contido entre dois polls sai com duração ZERO, seja
+       * ele um repique elétrico ou um toque humano legítimo. Medido no
+       * aparelho: 32 toques reais de A/L1/R1 apareceram com 0 ms. Portanto
+       * NÃO dá para separar repique de toque rápido por aqui, e filtrar por
+       * duração só descarta o toque que o latch existe para salvar. O filtro
+       * fica desligado por padrão; a variável continua para experimento.
        */
       Uint32 dur = ev->cbutton.timestamp - g_press_ts[i];
-      int min_ms = env_int("OCEAN_TAP_MIN_MS", 12);
+      int min_ms = env_int("OCEAN_TAP_MIN_MS", 0);
       if ((int)dur >= min_ms) g_latched[i] = 1;
       else if (g_verbose)
         fprintf(stderr, "[OCEANPAD] repique de %ums no botão %d descartado\n",

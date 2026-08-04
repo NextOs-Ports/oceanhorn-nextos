@@ -868,7 +868,38 @@ struct hk_inject_s { int action, keycode, source, deviceId, metaState, repeat,
                      scancode, flags, unicode; long eventTime, downTime; };
 struct hk_inject_s g_hk_inject;       /* exportado p/ main_recon */
 static int g_obj_keyevent;            /* sentinela do objeto KeyEvent */
-void *hk_keyevent_object(void) { return &g_obj_keyevent; }
+/* Quantas vezes o motor LEU os campos do evento injetado. Serve para provar se
+ * a leitura acontece DENTRO da chamada de nativeInjectEvent (síncrona) ou
+ * depois — no segundo caso, injetar dois eventos no mesmo quadro faz os dois
+ * lerem o mesmo estado final e um deles se perde. */
+unsigned g_keyev_reads, g_motionev_reads;
+/*
+ * ===== POR QUE CADA EVENTO PRECISA DO PRÓPRIO SNAPSHOT =====
+ * A sonda INJPROBE provou que o Unity lê 2 campos DURANTE o nativeInjectEvent
+ * e lê o RESTO depois, da fila de input (contador avançava 4 leituras entre
+ * duas injeções). Com um único objeto/struct global, a leitura adiada do
+ * evento N devolve os campos do evento N+1 que já sobrescreveu o global:
+ * um UP de direção injetado junto de outro evento (diagonal, eco, botão)
+ * virava OUTRO evento aos olhos do jogo — o Rewired nunca via a soltura e o
+ * personagem continuava andando sozinho. Cada injeção agora congela seus
+ * campos num slot do anel, e os getters resolvem pelo objeto recebido.
+ */
+#define KEYEV_SLOTS 32
+static struct hk_inject_s g_keyev_snap[KEYEV_SLOTS];
+static int g_keyev_tag[KEYEV_SLOTS];
+static unsigned g_keyev_pos;
+static struct hk_inject_s *keyev_for(void *obj) {
+  if (obj == (void *)&g_obj_keyevent) return &g_hk_inject;   /* legado */
+  if ((char *)obj >= (char *)g_keyev_tag &&
+      (char *)obj < (char *)(g_keyev_tag + KEYEV_SLOTS))
+    return &g_keyev_snap[(int *)obj - g_keyev_tag];
+  return NULL;
+}
+void *hk_keyevent_object(void) {
+  unsigned i = g_keyev_pos++ % KEYEV_SLOTS;
+  g_keyev_snap[i] = g_hk_inject;
+  return &g_keyev_tag[i];
+}
 static int g_gamepad_device;          /* sentinela do InputDevice (Xbox 360 virtual) */
 
 /* ---- Eixos do pad virtual (o Rewired PRECISA deles) ----------------------
@@ -892,7 +923,22 @@ struct ocean_motion_s { int action, source, deviceId, metaState, buttonState, fl
                         long eventTime, downTime; float axis[32]; };
 struct ocean_motion_s g_ocean_motion;
 static int g_obj_motionevent;
-void *ocean_motionevent_object(void) { return &g_obj_motionevent; }
+#define MOTEV_SLOTS 16
+static struct ocean_motion_s g_motev_snap[MOTEV_SLOTS];
+static int g_motev_tag[MOTEV_SLOTS];
+static unsigned g_motev_pos;
+static struct ocean_motion_s *motev_for(void *obj) {
+  if (obj == (void *)&g_obj_motionevent) return &g_ocean_motion; /* legado */
+  if ((char *)obj >= (char *)g_motev_tag &&
+      (char *)obj < (char *)(g_motev_tag + MOTEV_SLOTS))
+    return &g_motev_snap[(int *)obj - g_motev_tag];
+  return NULL;
+}
+void *ocean_motionevent_object(void) {
+  unsigned i = g_motev_pos++ % MOTEV_SLOTS;
+  g_motev_snap[i] = g_ocean_motion;
+  return &g_motev_tag[i];
+}
 static int g_current_activity;        /* UnityPlayer.currentActivity fake */
 static int g_current_activity_field_id;
 static int g_pressedstates_field_obj; /* java.lang.reflect.Field fake */
@@ -1101,18 +1147,19 @@ static float jni_CallFloatMethodV(void *env, void *obj, void *methodID, va_list 
   if (nm) {
     /* MotionEvent.getAxisValue(axis) — é por aqui que o analógico e o d-pad
        chegam ao Rewired/Unity. Sem isso o pad "existe" mas não move nada. */
-    if (obj == (void *)&g_obj_motionevent &&
-        (strcmp(nm, "getAxisValue") == 0 ||
-         strcmp(nm, "getHistoricalAxisValue") == 0)) {
-      int axis = va_arg(ap, int);
-      return (axis >= 0 && axis < 32) ? g_ocean_motion.axis[axis] : 0.0f;
-    }
-    if (obj == (void *)&g_obj_motionevent) {
-      if (strcmp(nm, "getX") == 0) return g_ocean_motion.axis[0];
-      if (strcmp(nm, "getY") == 0) return g_ocean_motion.axis[1];
-      if (strcmp(nm, "getPressure") == 0) return 1.0f;
-      if (strcmp(nm, "getSize") == 0) return 0.0f;
-    }
+    { struct ocean_motion_s *me = motev_for(obj);
+      if (me && (strcmp(nm, "getAxisValue") == 0 ||
+                 strcmp(nm, "getHistoricalAxisValue") == 0)) {
+        int axis = va_arg(ap, int);
+        g_motionev_reads++;
+        return (axis >= 0 && axis < 32) ? me->axis[axis] : 0.0f;
+      }
+      if (me) {
+        if (strcmp(nm, "getX") == 0) return me->axis[0];
+        if (strcmp(nm, "getY") == 0) return me->axis[1];
+        if (strcmp(nm, "getPressure") == 0) return 1.0f;
+        if (strcmp(nm, "getSize") == 0) return 0.0f;
+      } }
     { int mr = motion_range_index(obj);
       if (mr >= 0) {
         int axis = g_axis_ids[mr];
@@ -1274,8 +1321,7 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
        controle pertence e a engine não resolve os EIXOS — sintoma exato: botão
        funciona (só precisa do keycode) e analógico não faz nada. O getDevice de
        classe/estático já existia, mas não cobre a chamada no próprio evento. */
-    if ((obj == (void *)&g_obj_motionevent || obj == (void *)&g_obj_keyevent) &&
-        strcmp(nm, "getDevice") == 0)
+    if ((motev_for(obj) || keyev_for(obj)) && strcmp(nm, "getDevice") == 0)
       return &g_gamepad_device;
     /* List<MotionRange> do pad virtual: iterator/get REAIS (a lista vazia do
        shim faria o Rewired concluir que o controle não tem eixo nenhum). */
@@ -1932,22 +1978,23 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
     if (obj == (void *)&g_motion_range_list && strcmp(nm, "size") == 0) return 8;
     if (obj == (void *)&g_motion_range_iter && strcmp(nm, "hasNext") == 0)
       return g_motion_iter_pos < 8;
-    /* MotionEvent injetado */
-    if (obj == (void *)&g_obj_motionevent) {
-      if (strcmp(nm, "getAction") == 0)       return g_ocean_motion.action;
-      if (strcmp(nm, "getSource") == 0)       return g_ocean_motion.source;
-      if (strcmp(nm, "getDeviceId") == 0)     return g_ocean_motion.deviceId;
-      if (strcmp(nm, "getMetaState") == 0)    return g_ocean_motion.metaState;
-      if (strcmp(nm, "getButtonState") == 0)  return g_ocean_motion.buttonState;
-      if (strcmp(nm, "getFlags") == 0)        return g_ocean_motion.flags;
+    /* MotionEvent injetado (snapshot próprio; ver anel acima) */
+    { struct ocean_motion_s *me = motev_for(obj);
+      if (me) {
+      if (strcmp(nm, "getAction") == 0)       return me->action;
+      if (strcmp(nm, "getSource") == 0)       return me->source;
+      if (strcmp(nm, "getDeviceId") == 0)     return me->deviceId;
+      if (strcmp(nm, "getMetaState") == 0)    return me->metaState;
+      if (strcmp(nm, "getButtonState") == 0)  return me->buttonState;
+      if (strcmp(nm, "getFlags") == 0)        return me->flags;
       if (strcmp(nm, "getPointerCount") == 0) return 1;
       if (strcmp(nm, "getHistorySize") == 0)  return 0;
       if (strcmp(nm, "getPointerId") == 0)    return 0;
-      if (strcmp(nm, "getActionMasked") == 0) return g_ocean_motion.action;
+      if (strcmp(nm, "getActionMasked") == 0) return me->action;
       if (strcmp(nm, "getActionIndex") == 0)  return 0;
       if (strcmp(nm, "getEdgeFlags") == 0)    return 0;
       return 0;
-    }
+      } }
     if (obj == (void *)&g_gamepad_device) {
       if (strcmp(nm, "getVendorId") == 0)        return 1118;       /* 0x045E Microsoft */
       if (strcmp(nm, "getProductId") == 0)       return 654;        /* 0x028E Xbox360 pad */
@@ -1958,19 +2005,23 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
       if (strcmp(nm, "supportsSource") == 0)     return 1;
       return 0;
     }
-    if (strcmp(nm, "getAction") == 0) { debugPrintf("[KEYEV] getAction->%d\n", g_hk_inject.action); return g_hk_inject.action; }
-    if (strcmp(nm, "getKeyCode") == 0) { debugPrintf("[KEYEV] getKeyCode->%d\n", g_hk_inject.keycode); return g_hk_inject.keycode; }
-    if (strcmp(nm, "getSource") == 0) return g_hk_inject.source;
-    if (strcmp(nm, "getDeviceId") == 0) return g_hk_inject.deviceId;
-    if (strcmp(nm, "getMetaState") == 0) return g_hk_inject.metaState;
-    if (strcmp(nm, "getRepeatCount") == 0) return g_hk_inject.repeat;
-    if (strcmp(nm, "getScanCode") == 0) return g_hk_inject.scancode;
+    { struct hk_inject_s *ke = keyev_for(obj);
+      if (!ke) ke = &g_hk_inject;   /* caller sem objeto de evento: legado */
+    if (strcmp(nm, "getAction") == 0) { g_keyev_reads++; debugPrintf("[KEYEV] getAction->%d\n", ke->action); return ke->action; }
+    if (strcmp(nm, "getKeyCode") == 0) { g_keyev_reads++; debugPrintf("[KEYEV] getKeyCode->%d\n", ke->keycode); return ke->keycode; }
+    if (strcmp(nm, "getSource") == 0) return ke->source;
+    if (strcmp(nm, "getDeviceId") == 0) return ke->deviceId;
+    if (strcmp(nm, "getMetaState") == 0) return ke->metaState;
+    if (strcmp(nm, "getRepeatCount") == 0) return ke->repeat;
+    if (strcmp(nm, "getScanCode") == 0) return ke->scancode;
+    }
     if (strcmp(nm, "getInt") == 0) { void *k = va_arg(ap, void *); int d = va_arg(ap, int);
       const char *key = resolve_jstring(k);
       int v = prefs_get_int(key, d);
       debugPrintf("[PREFS] getInt key='%s' def=%d -> %d\n", key, d, v); return v; }
-    if (strcmp(nm, "getFlags") == 0) return g_hk_inject.flags;
-    if (strcmp(nm, "getUnicodeChar") == 0) return g_hk_inject.unicode;
+    { struct hk_inject_s *ke = keyev_for(obj); if (!ke) ke = &g_hk_inject;
+      if (strcmp(nm, "getFlags") == 0) return ke->flags;
+      if (strcmp(nm, "getUnicodeChar") == 0) return ke->unicode; }
     if (strcmp(nm, "size") == 0) return 0; /* List/Collection vazia */
     /* ---- Display: o engine pega resolucao/rotacao reais, sem fallback fixo. ---- */
     if (strcmp(nm, "getWidth") == 0 || strcmp(nm, "getRawWidth") == 0) { int w, h; ter_display_size(&w, &h); return w; }
@@ -2730,10 +2781,10 @@ static void *jni_GetObjectClass(void *env, void *obj) {
     return class_for("com/google/games/bridge/TokenResult");
   if (obj == &g_google_pending_result_sentinel)
     return class_for("com/google/android/gms/common/api/PendingResult");
-  if (obj == &g_obj_keyevent) return class_for("android/view/KeyEvent");
+  if (keyev_for(obj)) return class_for("android/view/KeyEvent");
   /* Sem identidade de classe própria o nativeInjectEvent REJEITA o MotionEvent
      (aceito=0) e o analógico/d-pad nunca chega ao jogo. */
-  if (obj == &g_obj_motionevent) return class_for("android/view/MotionEvent");
+  if (motev_for(obj)) return class_for("android/view/MotionEvent");
   if (obj == &g_long_box_sentinel) return class_for("java/lang/Long");
   if (obj == &g_message_sentinel) return class_for("android/os/Message");
   if (obj == &g_handlerthread_sentinel) return class_for("android/os/HandlerThread");
@@ -2745,8 +2796,8 @@ static void *jni_GetObjectClass(void *env, void *obj) {
 static unsigned char jni_IsInstanceOf(void *env, void *obj, void *clazz) {
   (void)env;
   if (is_jstring(obj)) return clazz == class_for("java/lang/String");
-  if (obj == &g_obj_keyevent) return clazz == class_for("android/view/KeyEvent");
-  if (obj == &g_obj_motionevent) {
+  if (keyev_for(obj)) return clazz == class_for("android/view/KeyEvent");
+  if (motev_for(obj)) {
     /* MotionEvent É um InputEvent — o injetor testa as duas coisas. */
     return clazz == class_for("android/view/MotionEvent") ||
            clazz == class_for("android/view/InputEvent");
@@ -2768,8 +2819,12 @@ static long jni_CallLongMethodV(void *env, void *obj, void *methodID, va_list ap
       return (long)prefs_get_long(key, fallback);
     }
     if (strcmp(nm, "getLongVersionCode") == 0) return (long)g_package_version_code;
-    if (strcmp(nm, "getEventTime") == 0) return g_hk_inject.eventTime;
-    if (strcmp(nm, "getDownTime") == 0) return g_hk_inject.downTime;
+    { struct hk_inject_s *ke = keyev_for(obj);
+      struct ocean_motion_s *me = motev_for(obj);
+      if (strcmp(nm, "getEventTime") == 0)
+        return me ? me->eventTime : (ke ? ke->eventTime : g_hk_inject.eventTime);
+      if (strcmp(nm, "getDownTime") == 0)
+        return me ? me->downTime : (ke ? ke->downTime : g_hk_inject.downTime); }
     if (strcmp(nm, "longValue") == 0) return g_doframe_nanos;
     /* android.os.StatFs — checagem de espaço livre (Single Player checa antes de salvar).
        Sem isso retorna 0 → "Your device is low on storage". Reportamos ~50GB livres. */
@@ -2800,8 +2855,13 @@ static long jni_CallLongMethodA(void *env, void *obj, void *methodID,
   if (nm && strcmp(nm, "getLongVersionCode") == 0)
     return (long)g_package_version_code;
   if (nm && strcmp(nm, "longValue") == 0) return g_doframe_nanos;
-  if (nm && strcmp(nm, "getEventTime") == 0) return g_hk_inject.eventTime;
-  if (nm && strcmp(nm, "getDownTime") == 0) return g_hk_inject.downTime;
+  if (nm && (strcmp(nm, "getEventTime") == 0 || strcmp(nm, "getDownTime") == 0)) {
+    struct hk_inject_s *ke = keyev_for(obj);
+    struct ocean_motion_s *me = motev_for(obj);
+    long ev = me ? me->eventTime : (ke ? ke->eventTime : g_hk_inject.eventTime);
+    long dn = me ? me->downTime : (ke ? ke->downTime : g_hk_inject.downTime);
+    return nm[3] == 'E' ? ev : dn;
+  }
   return 0;
 }
 
