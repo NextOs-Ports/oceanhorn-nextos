@@ -73,12 +73,22 @@ static SDL_Joystick *g_raw;            /* fallback: pad fora da base do SDL */
  * físicos (RG351/R36S/GO-Super). -1 = pad normal, caminho intocado. */
 static int g_th_sel = -1, g_th_start = -1;
 static unsigned char g_down[B_COUNT];
-static unsigned char g_latched[B_COUNT];   /* DOWN visto por evento entre polls */
+static unsigned char g_latched[B_COUNT];   /* toque curto confirmado entre polls */
+static unsigned char g_press_open[B_COUNT];/* DOWN visto, aguardando o UP */
+static Uint32 g_press_ts[B_COUNT];         /* instante do DOWN (ms do SDL) */
+static unsigned char g_release_echo[B_COUNT]; /* repetir o UP no frame seguinte */
+static long g_down_time[B_COUNT];          /* downTime POR BOTÃO */
 static unsigned char g_stick_direction[4]; /* up, down, left, right */
+static int g_dir_band[4];                  /* frames parado na faixa morta */
 static int g_verbose;
 static int g_open_retry;
 static int g_ready;
 static int g_exit_requested;
+
+static int env_int(const char *name, int def) {
+  const char *v = getenv(name);
+  return v && *v ? atoi(v) : def;
+}
 
 static long ocean_now_ms(void) {
   struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -100,19 +110,45 @@ static float axis_norm(Sint16 v) {
  * DOWN/UP repetidos quando um stick gasto oscila perto da zona morta.
  */
 static void stick_to_dpad(float x, float y, unsigned char *buttons) {
-  /* Stick gasto descansa em ~0,25: com release baixo a direção ENGAJADA nunca
-   * soltava e o d-pad virava diagonal ("continua indo pra cima"). */
+  /* Stick gasto descansa longe do zero: com release baixo a direção ENGAJADA
+   * nunca soltava e o personagem "continuava indo pra cima". */
   const float engage = 0.40f;
   const float release = 0.30f;
+  /*
+   * Elevar o limiar não resolve o caso de vez: basta o repouso do stick derivar
+   * para DENTRO da faixa [release, engage) — com o uso, a temperatura ou o
+   * desgaste — e a direção fica engatada para sempre, que é exatamente o
+   * "anda sozinho" relatado. O detalhe que fecha o problema: nessa faixa o
+   * stick não consegue INICIAR um movimento (precisa passar de engage), então
+   * ficar nela por muito tempo não pode significar "andando". Depois de
+   * ~0,75 s parado na faixa, tratamos como centro e soltamos. Quem está
+   * realmente empurrando fica perto de 1,0 e nunca cai nesta regra.
+   */
+  const int band_limit = env_int("OCEAN_STICK_BAND_FRAMES", 22);
+  const float mag[4] = { -y, y, -x, x };   /* up, down, left, right */
 
-  g_stick_direction[0] =
-      g_stick_direction[0] ? y < -release : y < -engage; /* up */
-  g_stick_direction[1] =
-      g_stick_direction[1] ? y > release : y > engage;   /* down */
-  g_stick_direction[2] =
-      g_stick_direction[2] ? x < -release : x < -engage; /* left */
-  g_stick_direction[3] =
-      g_stick_direction[3] ? x > release : x > engage;   /* right */
+  for (int d = 0; d < 4; d++) {
+    if (g_stick_direction[d]) {
+      if (mag[d] < release) {
+        g_stick_direction[d] = 0;
+        g_dir_band[d] = 0;
+      } else if (mag[d] < engage) {
+        if (band_limit > 0 && ++g_dir_band[d] > band_limit) {
+          g_stick_direction[d] = 0;
+          g_dir_band[d] = 0;
+          if (g_verbose)
+            fprintf(stderr,
+                    "[OCEANPAD] direção %d presa na faixa morta (%.2f) — "
+                    "tratada como centro\n", d, (double)mag[d]);
+        }
+      } else {
+        g_dir_band[d] = 0;
+      }
+    } else {
+      g_dir_band[d] = 0;
+      g_stick_direction[d] = mag[d] > engage;
+    }
+  }
 
   buttons[B_UP]    |= g_stick_direction[0];
   buttons[B_DOWN]  |= g_stick_direction[1];
@@ -160,13 +196,27 @@ static int ord_key_rank(const unsigned long *keyb, int code) {
   return rank;
 }
 
-static void ocean_find_th_ordinals(void) {
+static void ocean_find_th_ordinals(const char *sdl_name) {
   g_th_sel = g_th_start = -1;
   for (int i = 0; i < 32; i++) {
     char path[64];
     snprintf(path, sizeof path, "/dev/input/event%d", i);
     int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) continue;
+    /*
+     * Os ordinais só valem para o pad que o SDL abriu. Com dois controles
+     * ligados, pegar o primeiro nó que "parece" servir faria SELECT/START
+     * saírem de OUTRO aparelho — um toque fantasma que ainda por cima pode
+     * disparar o combo de saída. Confere o nome antes de aceitar o nó.
+     */
+    char evname[128];
+    memset(evname, 0, sizeof evname);
+    if (sdl_name && *sdl_name &&
+        ioctl(fd, EVIOCGNAME(sizeof evname - 1), evname) >= 0 &&
+        evname[0] && strcmp(evname, sdl_name) != 0) {
+      close(fd);
+      continue;
+    }
     unsigned long keyb[(KEY_MAX + 1 + 8 * sizeof(long) - 1) /
                        (8 * sizeof(long))];
     memset(keyb, 0, sizeof keyb);
@@ -210,7 +260,7 @@ static void ocean_open_pad(void) {
       if (g_pad) {
         fprintf(stderr, "[OCEANPAD] controle: \"%s\" (SDL GameController #%d)\n",
                 SDL_GameControllerName(g_pad), i);
-        ocean_find_th_ordinals();
+        ocean_find_th_ordinals(SDL_GameControllerName(g_pad));
         return;
       }
     }
@@ -226,7 +276,8 @@ static void ocean_open_pad(void) {
   }
 }
 
-static void inject_key(void *env, void *thiz, void *inject, int idx, int down) {
+static void inject_key(void *env, void *thiz, void *inject, int idx, int down,
+                       const char *origem) {
   g_hk_inject.action = down ? 0 : 1;          /* 0=ACTION_DOWN 1=ACTION_UP */
   g_hk_inject.keycode = g_keycode[idx];
   g_hk_inject.source = SRC_BUTTONS;
@@ -238,12 +289,17 @@ static void inject_key(void *env, void *thiz, void *inject, int idx, int down) {
   g_hk_inject.unicode = 0;
   long now = ocean_now_ms();
   g_hk_inject.eventTime = now;
-  if (down) g_hk_inject.downTime = now;
+  /* downTime é POR BOTÃO: o Android correlaciona DOWN e UP por ele. Com um
+     campo só, o UP de um botão saía carimbado com o downTime de outro que
+     tivesse descido depois — par malformado, do ponto de vista de quem lê. */
+  if (down) g_down_time[idx] = now;
+  g_hk_inject.downTime = g_down_time[idx] ? g_down_time[idx] : now;
   int r = ((int (*)(void *, void *, void *, int))inject)(env, thiz,
                                                          hk_keyevent_object(), 0);
   if (g_verbose)
-    fprintf(stderr, "[OCEANPAD] key %d %s -> aceito=%d\n",
-            g_keycode[idx], down ? "DOWN" : "UP", r);
+    fprintf(stderr, "[OCEANPAD] key %d %s%s%s -> aceito=%d\n",
+            g_keycode[idx], down ? "DOWN" : "UP", origem ? " " : "",
+            origem ? origem : "", r);
 }
 
 static void inject_motion(void *env, void *thiz, void *inject) {
@@ -335,9 +391,21 @@ void ocean_input_poll(void *env, void *thiz, void *inject) {
    */
   if (now_down[B_BACK] && now_down[B_START]) {
     g_exit_requested = 1;
+    /* Solta tudo que estiver pressionado antes de sair: o último quadro não
+       pode deixar tecla pendurada na visão do jogo. */
+    for (int i = 0; i < B_COUNT; i++)
+      if (g_down[i]) { g_down[i] = 0; inject_key(env, thiz, inject, i, 0, "(saída)"); }
     fprintf(stderr, "[OCEANPAD] SELECT+START -> saída limpa solicitada\n");
     fflush(stderr);
     return;
+  }
+
+  /* toque mais curto que um poll: latch garante 1 frame de DOWN. Fica ANTES do
+     HAT para que um toque de direção vindo do latch apareça nos dois caminhos
+     (tecla e eixo) — antes o eixo saía sem a tecla correspondente. */
+  for (int i = 0; i < B_COUNT; i++) {
+    if (g_latched[i] && !now_down[i] && !g_down[i]) now_down[i] = 1;
+    g_latched[i] = 0;
   }
 
   /* d-pad também vai como HAT_X/HAT_Y: pads Android reportam os dois, e o
@@ -345,26 +413,45 @@ void ocean_input_poll(void *env, void *thiz, void *inject) {
   ax[15] = (float)(now_down[B_RIGHT] - now_down[B_LEFT]);
   ax[16] = (float)(now_down[B_DOWN] - now_down[B_UP]);
 
+  /*
+   * Reenvio periódico do estado dos eixos. Até aqui o MotionEvent só era
+   * injetado QUANDO MUDAVA — e isso torna um único evento perdido permanente:
+   * se o "stick voltou ao centro" se perde numa engasgada (troca de cena, GC,
+   * pressão de memória), o jogo segue vendo a última deflexão para sempre e o
+   * personagem anda sozinho, sem nada de errado do nosso lado. Reafirmar o
+   * estado atual algumas vezes por segundo faz o jogo se recuperar sozinho em
+   * meio segundo, e custa um evento a cada 15 quadros.
+   */
+  static int resend_countdown;
+  const int resend_every = env_int("OCEAN_AXIS_RESEND", 15);
   int axes_changed = memcmp(ax, g_ocean_motion.axis, sizeof ax) != 0;
-  if (axes_changed) {
+  if (axes_changed || (resend_every > 0 && --resend_countdown <= 0)) {
     memcpy(g_ocean_motion.axis, ax, sizeof ax);
+    resend_countdown = resend_every;
     inject_motion(env, thiz, inject);
   }
-  /* toque mais curto que um poll: latch garante 1 frame de DOWN */
-  for (int i = 0; i < B_COUNT; i++) {
-    if (g_latched[i] && !now_down[i] && !g_down[i]) now_down[i] = 1;
-    g_latched[i] = 0;
-  }
+
   /* RELEASES primeiro: trocar de direção nunca passa por diagonal fantasma */
   for (int i = 0; i < B_COUNT; i++)
     if (!now_down[i] && g_down[i]) {
       g_down[i] = 0;
-      inject_key(env, thiz, inject, i, 0);
+      inject_key(env, thiz, inject, i, 0, NULL);
+      g_release_echo[i] = 1;   /* eco no próximo quadro (ver abaixo) */
+    } else if (g_release_echo[i] && !now_down[i]) {
+      /* Um UP perdido deixa a AÇÃO presa no jogo (ataque que não para), e o
+         nosso lado nem fica sabendo, porque para nós o botão já está solto.
+         Repetir o UP uma vez é idempotente para quem lê e recupera o evento
+         perdido no quadro seguinte. */
+      g_release_echo[i] = 0;
+      inject_key(env, thiz, inject, i, 0, "(eco)");
+    } else {
+      g_release_echo[i] = 0;
     }
   for (int i = 0; i < B_COUNT; i++)
     if (now_down[i] && !g_down[i]) {
       g_down[i] = 1;
-      inject_key(env, thiz, inject, i, 1);
+      g_release_echo[i] = 0;
+      inject_key(env, thiz, inject, i, 1, NULL);
     }
 }
 
@@ -373,13 +460,36 @@ void ocean_input_poll(void *env, void *thiz, void *inject) {
  * próximo frame — sem isso, troca de herói (L/R) às vezes "não pegava". */
 void ocean_input_notify_event(const void *sdl_event) {
   const SDL_Event *ev = (const SDL_Event *)sdl_event;
-  if (!ev || ev->type != SDL_CONTROLLERBUTTONDOWN) return;
-  for (int i = 0; i < B_COUNT; i++)
-    if (g_sdl_button[i] != SDL_CONTROLLER_BUTTON_INVALID &&
-        (int)g_sdl_button[i] == (int)ev->cbutton.button) {
-      g_latched[i] = 1;
-      return;
+  if (!ev) return;
+  if (ev->type != SDL_CONTROLLERBUTTONDOWN &&
+      ev->type != SDL_CONTROLLERBUTTONUP) return;
+  for (int i = 0; i < B_COUNT; i++) {
+    if (g_sdl_button[i] == SDL_CONTROLLER_BUTTON_INVALID ||
+        (int)g_sdl_button[i] != (int)ev->cbutton.button)
+      continue;
+    if (ev->type == SDL_CONTROLLERBUTTONDOWN) {
+      g_press_ts[i] = ev->cbutton.timestamp;
+      g_press_open[i] = 1;
+    } else if (g_press_open[i]) {
+      /*
+       * Antes, QUALQUER DOWN entre dois polls virava um toque garantido — e um
+       * repique de contato (DOWN+UP em poucos milissegundos, comum em pad
+       * gasto) é indistinguível de um toque rápido de verdade nesse critério.
+       * O latch transformava esse ruído elétrico em um toque completo: o
+       * "toque fantasma". Medindo a duração pelo próprio carimbo do SDL, o
+       * repique é descartado e o toque humano (>= dezenas de ms) continua
+       * garantido.
+       */
+      Uint32 dur = ev->cbutton.timestamp - g_press_ts[i];
+      int min_ms = env_int("OCEAN_TAP_MIN_MS", 12);
+      if ((int)dur >= min_ms) g_latched[i] = 1;
+      else if (g_verbose)
+        fprintf(stderr, "[OCEANPAD] repique de %ums no botão %d descartado\n",
+                (unsigned)dur, i);
+      g_press_open[i] = 0;
     }
+    return;
+  }
 }
 
 int ocean_input_exit_requested(void) {
@@ -390,5 +500,9 @@ void ocean_input_shutdown(void) {
   if (g_pad) { SDL_GameControllerClose(g_pad); g_pad = NULL; }
   if (g_raw) { SDL_JoystickClose(g_raw); g_raw = NULL; }
   memset(g_stick_direction, 0, sizeof g_stick_direction);
+  memset(g_dir_band, 0, sizeof g_dir_band);
+  memset(g_latched, 0, sizeof g_latched);
+  memset(g_press_open, 0, sizeof g_press_open);
+  memset(g_release_echo, 0, sizeof g_release_echo);
   g_ready = 0;
 }
