@@ -1,5 +1,54 @@
 # Changelog — Oceanhorn: Chronos Dungeon (NextOS Ports)
 
+## v1.0.5 (Universal) — 04/08/2026
+
+Terceira rodada de log de campo (R36S/dArkOSRE, tela preta com som ao entrar na
+caverna e encerramento em ~2 minutos). O log entregou duas causas independentes,
+as duas corrigidas aqui. Obrigado pelo relato.
+
+### Corrigido
+- **Patch interno aplicado às cegas numa build diferente do jogo**: o log do
+  testador é de uma libunity **2022.3.62f1**; a build de referência do port é a
+  **2022.3.61f1**. Endereço interno é válido só para a build de onde foi
+  extraído — e o do wrapper `createSound` caía em **outra função**, que era
+  sobrescrita com o desvio. Efeito visível: o fallback de streaming de áudio
+  nunca rodava (daí os `Cannot create FMOD::Sound instance` e os
+  `Failed getting load state of FSB`) e uma função desconhecida ficava
+  corrompida. Agora todo sítio de patch **confere a assinatura do código antes
+  de escrever**; se o endereço não bate, a mesma sequência é procurada no módulo
+  e só é aceita quando aparece **uma única vez**; sem casamento único o patch
+  simplesmente não é instalado. Na build de referência o resultado é idêntico ao
+  da v1.0.4, instrução por instrução.
+- **OOM ao carregar a cena seguinte (a caverna)**: o encerramento era o OOM
+  killer. O aviso de memória só saía a 29 MB de `MemAvailable` — depois do
+  precipício — e **uma única vez**, porque o rearme exigia a memória voltar a
+  subir, o que nunca acontece durante um carregamento. Agora a amostragem é de
+  1 s, o aviso sai bem antes (`MemAvailable` < 120 MB), ele **se repete** a cada
+  ~10 s enquanto durar a pressão, e cada aviso devolve ao kernel as arenas
+  livres da glibc. Nenhum swap é criado e nada no sistema do usuário é alterado.
+- **Teto para o fallback de áudio residente**: um clip de streaming convertido
+  em residente ocupa a RAM inteira do clip. Acima de 16 MB (ajustável) ele
+  continua no caminho de stream original.
+
+### Adicionado
+- Linha `[BUILD]` no início do log dizendo se a sua cópia do jogo casa com a
+  build de referência — qualquer relato futuro já vem com essa resposta.
+- Curva de memória no log sem precisar de variável de diagnóstico: `[MEM]` a
+  cada ~60 s, e a cada ~5 s enquanto houver pressão.
+- `userdata/ocean-env.sh`: o launcher carrega esse arquivo se ele existir. É o
+  lugar para experimentar uma opção sem editar arquivo distribuído, e ele
+  sobrevive à atualização do port.
+- Opções novas: `OCEAN_LOWMEM_KB`, `OCEAN_RESIDENT_MAX_MB` e
+  `OCEAN_TRUE_MEMINFO=1` (esta última mostra ao motor a memória livre real do
+  aparelho, em vez de um valor fixo — **opt-in**, por mudar o comportamento do
+  motor no alvo já validado).
+
+### Sobre a caverna
+As duas correções acima atacam exatamente o que o log prova. A confirmação de
+que a caverna carrega precisa de uma partida no aparelho: se ainda faltar
+memória, o novo log traz a curva `[MEM]` do carregamento inteiro, e o primeiro
+knob a experimentar é `OCEAN_TRUE_MEMINFO=1`.
+
 ## v1.0.4 (Universal) — 03/08/2026
 
 Segunda rodada de logs de campo. Obrigado de novo, testadores — os três

@@ -23,6 +23,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <dlfcn.h>
+#include <malloc.h>
 #include <pthread.h>
 #include <signal.h>
 #include <time.h>
@@ -741,7 +742,30 @@ static int g_dllog;
 static const char *asset_redirect(const char *p, char *buf, size_t bufsz);
 static FILE *my_fopen(const char *p, const char *m) {
   if (p && !strcmp(p, "/proc/meminfo")) {
-    FILE *t = tmpfile(); if (t) { fputs("MemTotal:      524288 kB\nMemFree:       262144 kB\nMemAvailable:  262144 kB\n", t); rewind(t); return t; }
+    /* MemTotal fica no valor conservador validado (512MB): é dele que a Unity
+     * tira SystemInfo.systemMemorySize e o dimensionamento dos seus caches.
+     * OCEAN_TRUE_MEMINFO=1 faz o LIVRE acompanhar o aparelho de verdade, para
+     * o alocador da Unity também sentir a pressão em vez de ver 256MB fixos.
+     * Fica OPT-IN: muda o comportamento do motor no alvo já validado. */
+    long freek = 262144;
+    if (getenv("OCEAN_TRUE_MEMINFO")) {
+      FILE *real = fopen("/proc/meminfo", "r");
+      if (real) { char ln[128];
+        while (fgets(ln, sizeof ln, real))
+          if (!strncmp(ln, "MemAvailable:", 13)) {
+            long v = atol(ln + 13);
+            if (v >= 0) freek = v < 262144 ? v : 262144;
+            break;
+          }
+        fclose(real);
+      }
+    }
+    FILE *t = tmpfile();
+    if (t) {
+      fprintf(t, "MemTotal:      524288 kB\nMemFree:       %ld kB\n"
+                 "MemAvailable:  %ld kB\n", freek, freek);
+      rewind(t); return t;
+    }
   }
   if (p && (!strcmp(p, "/sys/devices/system/cpu/possible") || !strcmp(p, "/sys/devices/system/cpu/present") || !strcmp(p, "/sys/devices/system/cpu/online"))) {
     FILE *t = tmpfile(); if (t) { fputs(getenv("CUP_1CORE") ? "0\n" : "0-3\n", t); rewind(t); return t; }
@@ -4445,6 +4469,48 @@ long my_inputwait_cr(void *it) {
   return r;
 }
 
+/* ===== Sítio de hook por ASSINATURA (não por endereço fixo) =====
+ * Um RVA cru só vale para a build exata do jogo de onde foi extraído. O campo
+ * trouxe uma libunity 2022.3.62f1 (a nossa referência é a 2022.3.61f1) na qual
+ * o RVA do wrapper createSound cai em OUTRA função: o trampolim era gravado em
+ * cima de código desconhecido e o fallback de streaming nunca rodava.
+ *
+ * Regra desta função: as instruções do sítio TÊM de conferir antes de qualquer
+ * escrita. Se o RVA de referência não confere, a MESMA sequência é procurada no
+ * módulo inteiro; ela só é aceita quando aparece UMA única vez. Sem casamento
+ * único, o hook simplesmente não é instalado (e o log diz isso). A assinatura
+ * precisa conter apenas instruções sem deslocamento relativo (nada de b/bl/adr)
+ * para continuar válida quando a build move a função de lugar. */
+static uintptr_t hook_site_by_sig(uintptr_t base, size_t size, uintptr_t rva,
+                                  const uint32_t *sig, size_t nsig,
+                                  const char *what) {
+  const size_t nbytes = nsig * sizeof *sig;
+  if (rva + nbytes <= size &&
+      !memcmp((const void *)(base + rva), sig, nbytes))
+    return base + rva;
+
+  uintptr_t found = 0;
+  size_t hits = 0;
+  for (size_t off = 0; off + nbytes <= size; off += 4) {
+    const uint32_t *w = (const uint32_t *)(base + off);
+    if (w[0] != sig[0] || memcmp(w, sig, nbytes)) continue;
+    if (++hits == 1) found = base + off;
+    else break;
+  }
+  if (hits == 1) {
+    fprintf(stderr,
+            "[SIG] %s: RVA 0x%lx não confere nesta build; assinatura única "
+            "achada em 0x%lx (realocado)\n",
+            what, (unsigned long)rva, (unsigned long)(found - base));
+    return found;
+  }
+  fprintf(stderr,
+          "[SIG] %s: RVA 0x%lx não confere e a assinatura tem %zu casamentos "
+          "— hook NÃO instalado (build de jogo diferente da referência)\n",
+          what, (unsigned long)rva, hits);
+  return 0;
+}
+
 /* ===== CUP_BOOTSPY: log de entrada nas funções da cadeia de boot (il2cpp) =====
  * Hooks de log genéricos: trampolim runtime copia as 4 insns clobberadas pelo
  * hook_arm64; stp/add/mov copiam direto, adrp é recomputado (ldr-literal com o
@@ -5607,8 +5673,29 @@ static long cs_hook(void *sys, void *data, int mode, void *exinfo, void *out) {
    * worker paths while preserving the original FSB and file callbacks.
    */
   if (g_stream_fallback && (mode & 0x80)) {
-    effective_mode &= ~(0x80 | 0x10000);
-    forced_resident = 1;
+    /* Residente custa RAM: o clip inteiro fica na memória em vez de ser lido em
+       pedaços. Num aparelho de 1 GB isso não pode ser ilimitado. Quando o
+       exinfo declara o tamanho (FMOD_CREATESOUNDEXINFO.length, +4), clips acima
+       do teto continuam no caminho de stream original. */
+    static long resident_cap = -1;
+    if (resident_cap < 0) {
+      const char *v = getenv("OCEAN_RESIDENT_MAX_MB");
+      resident_cap = (v ? atol(v) : 16) * 1024 * 1024;
+    }
+    unsigned declared = 0;
+    if (exinfo && addr_readable((uintptr_t)exinfo + 8))
+      declared = *(const uint32_t *)((const char *)exinfo + 4);
+    if (resident_cap > 0 && declared > (unsigned long)resident_cap) {
+      static int nbig;
+      if (nbig++ < 4)
+        fprintf(stderr,
+                "[CSSPY] clip de %u bytes acima do teto residente (%ldMB): "
+                "segue em stream\n",
+                declared, resident_cap / (1024 * 1024));
+    } else {
+      effective_mode &= ~(0x80 | 0x10000);
+      forced_resident = 1;
+    }
   }
 
   long r = cs_orig(sys, data, effective_mode, exinfo, out);
@@ -6080,6 +6167,30 @@ int main(int argc, char **argv) {
           "Unity 2022.3.61f1 IL2CPP (arm64) ===\n"
           "[runtime] game dir = %s\n", game_dir);
 
+  /* Carimbo da BUILD DO JOGO. O port é BYO-data: o APK que o usuário traz pode
+   * não ser a build de onde os endereços internos foram extraídos (o primeiro
+   * relato de campo era uma 2022.3.62f1; a referência é a 2022.3.61f1). Uma
+   * linha no log evita adivinhação em qualquer relato futuro. */
+  {
+    static const struct { const char *nm; long ref; } ref_libs[] = {
+      { "libunity.so", 16687096 }, { "libil2cpp.so", 30445456 },
+      { "libmain.so", 6728 },
+    };
+    char line[192]; int n = 0, same = 1;
+    for (size_t i = 0; i < sizeof ref_libs / sizeof *ref_libs; i++) {
+      struct stat st;
+      long got = stat(ref_libs[i].nm, &st) == 0 ? (long)st.st_size : -1;
+      if (got != ref_libs[i].ref) same = 0;
+      n += snprintf(line + n, sizeof line - (size_t)n, "%s%s=%ld",
+                    i ? " " : "", ref_libs[i].nm, got);
+      if (n < 0 || (size_t)n >= sizeof line) break;
+    }
+    fprintf(stderr, "[BUILD] %s -> %s\n", line,
+            same ? "casa com a build de referência"
+                 : "DIFERE da build de referência (endereços internos são "
+                   "verificados por assinatura antes de qualquer patch)");
+  }
+
   /* GL/EGL/z visíveis p/ dlsym(RTLD_DEFAULT) do Unity */
   dlopen("libz.so.1", RTLD_NOW | RTLD_GLOBAL);
   void *g = dlopen("libGLESv2.so.2", RTLD_NOW | RTLD_GLOBAL); if (!g) dlopen("libGLESv2.so", RTLD_NOW | RTLD_GLOBAL);
@@ -6471,17 +6582,27 @@ int main(int argc, char **argv) {
        do Horizon Chase e nem cabe nesta imagem (0xFE9B78). Achado pelo sítio do erro
        "Cannot create FMOD::Sound instance" (0x70c568): a chamada logo antes é
        bl 0xc7e168 com (system, nome/dados, mode, exinfo, sound**). */
-    void *tr = mk_tramp((uintptr_t)text_base + 0xc7e168, "createSound");
+    /* Prólogo do wrapper na libunity de referência (2022.3.61f1). Só instruções
+       sem deslocamento relativo, para sobreviver a builds que movem a função. */
+    static const uint32_t cs_sig[] = {
+      0xd10103ffu, 0xa90157f6u, 0xaa0103f6u, 0x910023e1u, 0xa9024ff4u,
+      0xa9037bfdu, 0x9100c3fdu, 0xaa0403f3u, 0xaa0303f4u, 0x2a0203f5u,
+    };
+    uintptr_t cs_site =
+        hook_site_by_sig((uintptr_t)text_base, text_size, 0xc7e168, cs_sig,
+                         sizeof cs_sig / sizeof *cs_sig, "createSound");
+    void *tr = cs_site ? mk_tramp(cs_site, "createSound") : NULL;
     if (tr) {
       cs_orig = (long (*)(void *, void *, int, void *, void *))tr;
       extern void so_make_text_writable(void), so_make_text_executable(void);
       so_make_text_writable();
-      hook_arm64((uintptr_t)text_base + 0xc7e168, (uintptr_t)cs_hook);
+      hook_arm64(cs_site, (uintptr_t)cs_hook);
       so_make_text_executable(); so_flush_caches();
       fprintf(stderr,
-              "[CSSPY] hook createSound(0xc7e168) instalado (fallback=%d)\n",
+              "[CSSPY] hook createSound(0x%lx) instalado (fallback=%d)\n",
+              (unsigned long)(cs_site - (uintptr_t)text_base),
               g_stream_fallback);
-    } else fprintf(stderr, "[CSSPY] mk_tramp falhou\n");
+    } else if (cs_site) fprintf(stderr, "[CSSPY] mk_tramp falhou\n");
     /* MIXSPY: ground-truth do mixer (count real + formato) p/ achar a causa do áudio rápido */
     if (getenv("HC_MIXER_TRACE")) {
       void *trm = mk_tramp((uintptr_t)text_base + 0x805a94, "mixer");
@@ -6495,18 +6616,26 @@ int main(int argc, char **argv) {
       } else fprintf(stderr, "[MIXSPY] mk_tramp falhou\n");
     }
     if (getenv("HC_SOUND_TRACE")) {
-      /* FMOD::Sound::getOpenState wrapper chamado pelo carregador de AudioClip. */
-      void *tro = mk_tramp((uintptr_t)text_base + 0xc7d7e8, "getOpenState");
+      /* FMOD::Sound::getOpenState wrapper chamado pelo carregador de AudioClip.
+         Assinatura idêntica à do createSound até a 9ª palavra; por isso ela não
+         é única no módulo e este sítio é apenas VERIFICADO, nunca realocado. */
+      static const uint32_t os_sig[] = {
+        0xd10103ffu, 0xa90157f6u, 0xaa0103f6u, 0x910023e1u, 0xa9024ff4u,
+        0xa9037bfdu, 0x9100c3fdu, 0xaa0403f3u, 0xaa0303f4u, 0xaa0203f5u,
+      };
+      uintptr_t os_site =
+          hook_site_by_sig((uintptr_t)text_base, text_size, 0xc7d7e8, os_sig,
+                           sizeof os_sig / sizeof *os_sig, "getOpenState");
+      void *tro = os_site ? mk_tramp(os_site, "getOpenState") : NULL;
       if (tro) {
         sound_openstate_orig =
             (long (*)(void *, int *, unsigned *, int *, int *))tro;
         extern void so_make_text_writable(void), so_make_text_executable(void);
         so_make_text_writable();
-        hook_arm64((uintptr_t)text_base + 0xc7d7e8,
-                   (uintptr_t)sound_openstate_hook);
+        hook_arm64(os_site, (uintptr_t)sound_openstate_hook);
         so_make_text_executable(); so_flush_caches();
         fprintf(stderr, "[OPENSTATE] hook getOpenState(0xc7d7e8) instalado\n");
-      } else {
+      } else if (os_site) {
         fprintf(stderr, "[OPENSTATE] mk_tramp falhou\n");
       }
     }
@@ -7284,29 +7413,50 @@ int main(int argc, char **argv) {
     /* Pressão de memória pelo FLUXO ANDROID: quando MemAvailable aperta, o
      * Android real manda onLowMemory -> nativeLowMemory e a Unity solta
      * caches/bundles. GC forçado direto crashou no campo (muOS ~60s). */
-    if (f % 150 == 0) {
-      static long lowmem_kb = -1; static int lowmem_armed = 1;
+    /* O log de campo do R36S mostrou o padrão: a pressão vinha do carregamento
+     * da cena seguinte (a caverna), o único aviso saía a 29MB de MemAvailable —
+     * tarde demais — e nunca se repetia, porque o rearme exigia a memória
+     * VOLTAR. Agora: amostra de 1s, aviso bem antes do precipício, repetição
+     * enquanto durar a pressão e devolução das arenas livres da glibc ao
+     * kernel. Nenhum swap é criado e o sistema do usuário não é tocado. */
+    if (f % 30 == 0) {
+      static long lowmem_kb = -1;
+      static int lowmem_cooldown;
       static void *lowmem_fn; static int lowmem_fn_init;
+      static int mem_next_report;
       if (lowmem_kb < 0) {
         const char *v = getenv("OCEAN_LOWMEM_KB");
-        lowmem_kb = v ? atol(v) : 70000;
+        lowmem_kb = v ? atol(v) : 120000;
       }
-      if (lowmem_kb > 0) {
-        long avail = -1; FILE *mi = fopen("/proc/meminfo", "r");
-        if (mi) { char ln[128];
-          while (fgets(ln, sizeof ln, mi))
-            if (!strncmp(ln, "MemAvailable:", 13)) { avail = atol(ln + 13); break; }
-          fclose(mi);
+      long avail = -1; FILE *mi = fopen("/proc/meminfo", "r");
+      if (mi) { char ln[128];
+        while (fgets(ln, sizeof ln, mi))
+          if (!strncmp(ln, "MemAvailable:", 13)) { avail = atol(ln + 13); break; }
+        fclose(mi);
+      }
+      if (avail > 0) {
+        const int pressed = lowmem_kb > 0 && avail < lowmem_kb;
+        /* Curva de memória no log mesmo sem CUP_MEMLOG: a cada ~60s em regime
+           normal e a cada ~5s sob pressão. É esta série que diz, no próximo
+           relato de campo, o que a cena nova custa de verdade. */
+        if (f >= mem_next_report) {
+          long rss = -1; char ln[128];
+          FILE *st = fopen("/proc/self/status", "r");
+          if (st) { while (fgets(ln, sizeof ln, st)) sscanf(ln, "VmRSS: %ld", &rss);
+            fclose(st); }
+          fprintf(stderr, "[MEM] f=%d avail=%ldMB rss=%ldMB%s\n",
+                  f, avail / 1024, rss / 1024, pressed ? " PRESSAO" : "");
+          fflush(stderr);
+          mem_next_report = f + (pressed ? 150 : 1800);
         }
-        if (avail > 0) {
+        if (pressed) {
           if (!lowmem_fn_init) { lowmem_fn = jni_find_native("nativeLowMemory"); lowmem_fn_init = 1; }
-          if (lowmem_armed && avail < lowmem_kb && lowmem_fn) {
+          if (lowmem_cooldown <= f && lowmem_fn) {
             fprintf(stderr, "[LOWMEM] MemAvailable=%ldkB < %ldkB -> nativeLowMemory (f=%d)\n",
                     avail, lowmem_kb, f); fflush(stderr);
             ((void (*)(void *, void *))lowmem_fn)(env, &thiz);
-            lowmem_armed = 0;
-          } else if (!lowmem_armed && avail > lowmem_kb + lowmem_kb / 2) {
-            lowmem_armed = 1;   /* re-arma quando a pressão passa */
+            malloc_trim(0);   /* arenas livres da glibc de volta ao kernel */
+            lowmem_cooldown = f + 300;   /* no máximo um sinal a cada ~10s */
           }
         }
       }

@@ -148,6 +148,18 @@ cd /storage/roms/ports/oceanhorn
 | `OCEAN_GPU_THERMAL_HIGH` | GPU fallback threshold in millidegrees Celsius |
 | `OCEAN_GPU_THERMAL_LOW` | GPU restore threshold in millidegrees Celsius |
 | `OCEAN_INPUTLOG=1` | Diagnostic controller event log |
+| `OCEAN_LOWMEM_KB` | `MemAvailable` threshold that triggers the Android low-memory signal (default 120000) |
+| `OCEAN_TRUE_MEMINFO=1` | Let the engine see the device's real free memory instead of a fixed value (opt-in) |
+| `OCEAN_RESIDENT_MAX_MB` | Ceiling for the FMOD stream→resident fallback (default 16) |
+
+Put any of these in `ports/oceanhorn/userdata/ocean-env.sh` (one `export` per
+line). That file survives port updates and is never shipped, so trying a knob
+never means editing a distributed file:
+
+```sh
+# ports/oceanhorn/userdata/ocean-env.sh
+export OCEAN_TRUE_MEMINFO=1
+```
 
 `CUP_RENDERSCALE` is deliberately removed by the production launcher because
 scaled rendering was visually rejected on the target hardware.
@@ -237,6 +249,16 @@ de código. O pacote privado full-data inclui a árvore Unity necessária, as tr
 bibliotecas ARM64, loader, launcher, licença, aviso, imagem do frontend e
 `userdata` vazio. Não inclui APK redundante, logs, saves pessoais, capturas,
 backups, fontes ou binários antigos.
+
+O port é BYO-data: o APK que você traz pode não ser exatamente a build de onde
+os endereços internos foram extraídos. O log abre com uma linha `[BUILD]` que
+diz se a sua cópia casa com a build de referência, e todo patch interno confere
+a assinatura do código antes de escrever — numa build diferente o patch se
+desliga sozinho em vez de corromper função desconhecida.
+
+Ajustes de testador vão em `ports/oceanhorn/userdata/ocean-env.sh` (um `export`
+por linha); esse arquivo sobrevive à atualização do port. Ver a tabela de
+opções na seção em inglês.
 
 ### Compilar e executar
 
