@@ -1,5 +1,59 @@
 # Changelog — Oceanhorn: Chronos Dungeon (NextOS Ports)
 
+## v1.0.7 (Universal) — 05/08/2026
+
+Relato de campo do Ivan (ArkOS/AeUX, aparelho de 1 GB, `tutorial trigger hit` →
+`signal 11 SEGV_ACCERR`). O log entregou a causa inteira. Obrigado pelo relato.
+
+### Corrigido
+- **Crash ao entrar no tutorial em aparelho de 1 GB** — o jogo morria com
+  `SIGSEGV (SEGV_ACCERR)` dentro do alocador principal da Unity
+  (`ALLOC_DEFAULT_MAIN`), num endereço que caía numa reserva de memória ainda
+  **protegida** (`---p`), no fim de um bloco de 16 MB. O mecanismo: a Unity
+  reserva regiões grandes com `mmap(PROT_NONE)` e depois "commita" pedaços com
+  `mprotect(RW)`. Com a memória do aparelho no fim (`MemAvailable` real de
+  26 MB dois segundos antes do crash) esse `mprotect` falha — e o alocador
+  escreve mesmo assim, dentro da reserva que nunca foi liberada para escrita.
+  Não era corrupção nem endereço de outra build: era falta de memória chegando
+  no motor como violação de acesso. Quatro correções entram juntas, e nenhuma
+  delas faz coisa alguma num aparelho com folga:
+  - **O motor voltou a enxergar a memória real.** O port entrega um
+    `/proc/meminfo` próprio para a Unity, e o valor LIVRE estava congelado em
+    256 MB desde sempre. O motor nunca sentia aperto nenhum: seguia crescendo
+    até o commit falhar de verdade. Agora o livre acompanha o aparelho, com o
+    mesmo teto de 256 MB de antes — enquanto há folga o motor lê exatamente o
+    número de sempre, e o alvo já validado não muda. `MemTotal` continua nos
+    512 MB conservadores que dimensionam os caches.
+  - **Commit sob demanda como rede de segurança.** Quando a escrita cai numa
+    reserva anônima ainda protegida, o port completa o commit da janela que
+    faltou e repete a instrução, em vez de morrer. O pedido de 16 MB de uma vez
+    é o que não passa; uma janela pequena passa. Escopo estreito de propósito
+    (só área `---p` anônima de 1 MB ou mais, com teto de RAM resgatada), e
+    guard page de pilha continua sendo crash de verdade.
+  - **Aviso de memória pela TAXA de queda, não só pelo nível.** O log de campo
+    mostra a memória caindo de 113 MB para 26 MB entre dois sinais, dentro de
+    um carregamento — o aviso pelo nível chegava tarde demais e só voltava a
+    tocar dez segundos depois. Agora um carregamento que come dezenas de MB por
+    segundo dispara o corte enquanto ainda há folga, e o sinal se repete a cada
+    3 s enquanto durar. Aparelho em regime normal fica parado num patamar e
+    nunca dispara essa regra.
+  - **Música inteira na RAM: o teto existia mas nunca reprovava.** O limite de
+    16 MB por clipe residente lia o tamanho declarado por um caminho que, fora
+    do handler de crash, respondia sempre zero — na prática todo clipe de
+    streaming virava residente, o arquivo inteiro em memória. O teto voltou a
+    funcionar, e sob pressão de memória nenhuma conversão acontece: o clipe
+    segue em stream.
+
+### Notas
+- Nada muda em dados, saves ou instalação: basta trocar os arquivos do port.
+- Válvulas de escape, se algum aparelho preferir o comportamento antigo:
+  `OCEAN_FAKE_MEMINFO=1` (livre fixo em 256 MB, como na v1.0.6),
+  `OCEAN_NO_COMMIT_RESCUE=1` (sem commit sob demanda),
+  `OCEAN_LOWMEM_FALL_KB` / `OCEAN_LOWMEM_EARLY_KB` (regra de taxa),
+  `OCEAN_RESIDENT_MAX_MB` (teto do clipe residente).
+- A linha `[MEM]` do log agora traz também a queda por segundo — é ela que diz,
+  no próximo relato, quanto uma cena custa de verdade.
+
 ## v1.0.6 (Universal) — 04/08/2026
 
 Duas causas grandes caíram nesta versão — as duas reproduzidas, rastreadas até

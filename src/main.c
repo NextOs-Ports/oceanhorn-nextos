@@ -492,6 +492,29 @@ static void crash_dump_qwords(const char *tag, uintptr_t base, int n) {
 }
 
 static volatile int g_crashing = 0;
+/* tamanho de página lido uma vez no startup: getpagesize() não é chamável de
+   dentro do handler de sinal. */
+static long g_pagesz = 4096;
+/* lidos 1× no startup: getenv() não é chamável de dentro do handler de sinal. */
+static int g_no_commit_rescue = 0;
+static long g_commit_rescue_max = 96L * 1024 * 1024;
+/* Pressão de memória medida pelo amostrador do loop de render (valor REAL do
+   aparelho, não o /proc/meminfo que o motor enxerga): 0=folga, 1=aperto,
+   2=crítico. Consumido pelo fallback de áudio, que deixa de trazer clipes
+   inteiros para a RAM enquanto o aperto durar. */
+static volatile int g_mem_pressure = 0;
+/* 🧯 nota async-signal-safe (write(2) cru): o handler não pode usar stdio. */
+static void cr_note(const char *tag, unsigned long a, unsigned long b) {
+  static const char hx[] = "0123456789abcdef";
+  char buf[192]; int n = 0;
+  for (const char *p = tag; *p && n < 120; p++) buf[n++] = *p;
+  buf[n++] = '0'; buf[n++] = 'x';
+  for (int i = 60; i >= 0; i -= 4) buf[n++] = hx[(a >> i) & 0xf];
+  buf[n++] = ' '; buf[n++] = '+';
+  for (int i = 28; i >= 0; i -= 4) buf[n++] = hx[(b >> i) & 0xf];
+  buf[n++] = '\n';
+  ssize_t w = write(2, buf, (size_t)n); (void)w;
+}
 #define ARENA_LO 0x7f10000000UL
 #define ARENA_HI 0x7f10200000UL
 static volatile unsigned long g_skipbad_n = 0;
@@ -544,6 +567,50 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
     _EMIT_S("\n"); if(n<256){ ssize_t _w=write(2,b,n); (void)_w; }
     #undef _EMIT_S
     #undef _EMIT_H
+  }
+  /* 🧯 COMMIT SOB DEMANDA da reserva da Unity.
+   *
+   * O alocador da Unity reserva regiões grandes com mmap(PROT_NONE) e commita
+   * pedaços com mprotect(PROT_READ|PROT_WRITE). Quando a memória do aparelho
+   * aperta, esse mprotect FALHA — e o alocador escreve assim mesmo, dentro da
+   * reserva ainda protegida: SIGSEGV com si_code=SEGV_ACCERR num endereço que
+   * cai numa área `---p`. É a assinatura exata do relato de campo (fault no fim
+   * de um bloco de 16MB, `[MEM] avail=26MB` dois segundos antes).
+   *
+   * Nada aqui salva um aparelho que realmente ficou sem memória — mas a falha
+   * do commit é MARGINAL: o pedido de 16MB de uma vez não passa e uma janela
+   * pequena passa. Completar o commit que faltou e repetir a instrução
+   * transforma um crash seco numa engasgada, e dá tempo do corte de memória
+   * (nativeLowMemory + fim do áudio residente) fazer efeito.
+   *
+   * Escopo estreito de propósito: só reserva ANÔNIMA `---p` de pelo menos 1MB
+   * (guard page de pilha tem uma página e nunca casa), teto próprio de RAM
+   * resgatada e teto de ocorrências. Fora disso, o caminho normal de crash
+   * segue intacto. OCEAN_NO_COMMIT_RESCUE=1 desliga. */
+  if (sig == SIGSEGV && si->si_code == SEGV_ACCERR && !g_no_commit_rescue &&
+      si->si_addr) {
+    static volatile unsigned long resc_bytes, resc_n;
+    if (resc_bytes < (unsigned long)g_commit_rescue_max && resc_n < 8192) {
+      uintptr_t fa = (uintptr_t)si->si_addr;
+      maps_snapshot();
+      uintptr_t lo = 0, hi = 0; char perm[5];
+      const char *line = maps_find(fa, &lo, &hi, perm);
+      if (line && !strchr(line, '/') &&
+          perm[0] == '-' && perm[1] == '-' && perm[2] == '-' &&
+          hi - lo >= (1UL << 20)) {
+        uintptr_t pg = (uintptr_t)g_pagesz;
+        uintptr_t a = fa & ~(pg - 1);
+        uintptr_t s = (a - lo >= (1UL << 20)) ? a - (1UL << 20) : lo;
+        uintptr_t e = (hi - a > (1UL << 20)) ? a + (1UL << 20) : hi;
+        if (e > s && mprotect((void *)s, e - s, PROT_READ | PROT_WRITE) == 0) {
+          resc_bytes += e - s;
+          if (resc_n++ < 16)
+            cr_note("[COMMIT] reserva da Unity commitada sob falta: ",
+                    (unsigned long)s, (unsigned)(e - s));
+          return;  /* repete a instrução que faltava a memória */
+        }
+      }
+    }
   }
   /* recovery: crash na thread de render (qualquer fault, não só arena) → volta pro
      loop e pula o frame. Só se armado e na thread certa. */
@@ -744,11 +811,21 @@ static FILE *my_fopen(const char *p, const char *m) {
   if (p && !strcmp(p, "/proc/meminfo")) {
     /* MemTotal fica no valor conservador validado (512MB): é dele que a Unity
      * tira SystemInfo.systemMemorySize e o dimensionamento dos seus caches.
-     * OCEAN_TRUE_MEMINFO=1 faz o LIVRE acompanhar o aparelho de verdade, para
-     * o alocador da Unity também sentir a pressão em vez de ver 256MB fixos.
-     * Fica OPT-IN: muda o comportamento do motor no alvo já validado. */
+     *
+     * O LIVRE acompanha o aparelho de verdade (era 256MB fixos até a v1.0.6).
+     * Motivo: o alocador da Unity reserva blocos grandes com mmap(PROT_NONE) e
+     * só "commita" pedaços com mprotect(RW) — e decide isso olhando o livre que
+     * ESTE arquivo declara. Com 256MB fixos o motor nunca sente aperto nenhum:
+     * segue crescendo até o commit falhar de verdade e escrever dentro da
+     * reserva ainda protegida (SIGSEGV/SEGV_ACCERR no meio do bloco). É
+     * exatamente o crash relatado no campo com MemAvailable real de 26MB.
+     *
+     * O teto de 256MB continua: enquanto o aparelho tem folga, o motor lê o
+     * MESMO valor de sempre e o alvo validado não muda em nada. A diferença só
+     * aparece abaixo de 256MB livres — onde o número antigo era mentira.
+     * OCEAN_FAKE_MEMINFO=1 volta ao comportamento fixo da v1.0.6. */
     long freek = 262144;
-    if (getenv("OCEAN_TRUE_MEMINFO")) {
+    if (!getenv("OCEAN_FAKE_MEMINFO")) {
       FILE *real = fopen("/proc/meminfo", "r");
       if (real) { char ln[128];
         while (fgets(ln, sizeof ln, real))
@@ -5682,10 +5759,28 @@ static long cs_hook(void *sys, void *data, int mode, void *exinfo, void *out) {
       const char *v = getenv("OCEAN_RESIDENT_MAX_MB");
       resident_cap = (v ? atol(v) : 16) * 1024 * 1024;
     }
+    /* O teto lia o tamanho declarado através do addr_readable(), que só enxerga
+       um snapshot de /proc/self/maps tirado dentro do handler de crash. Em
+       execução normal esse snapshot está vazio: o tamanho vinha SEMPRE zero e
+       o teto nunca reprovava nada — todo clipe de música virava residente,
+       inteiro na RAM. Ler o exinfo direto (conferindo o cbsize do próprio
+       FMOD_CREATESOUNDEXINFO) faz o teto voltar a existir. */
     unsigned declared = 0;
-    if (exinfo && addr_readable((uintptr_t)exinfo + 8))
-      declared = *(const uint32_t *)((const char *)exinfo + 4);
-    if (resident_cap > 0 && declared > (unsigned long)resident_cap) {
+    if (exinfo) {
+      unsigned cbsize = *(const uint32_t *)exinfo;
+      if (cbsize >= 8 && cbsize <= 4096)
+        declared = *(const uint32_t *)((const char *)exinfo + 4);
+    }
+    if (g_mem_pressure) {
+      /* Sob aperto de memória o clipe inteiro na RAM é exatamente o que não
+         cabe. Fica em stream: no pior caso essa faixa não toca, o que é
+         infinitamente melhor que derrubar o jogo. */
+      static int npress;
+      if (npress++ < 4)
+        fprintf(stderr,
+                "[CSSPY] memória sob pressão (nível %d): clipe segue em "
+                "stream em vez de residente\n", g_mem_pressure);
+    } else if (resident_cap > 0 && declared > (unsigned long)resident_cap) {
       static int nbig;
       if (nbig++ < 4)
         fprintf(stderr,
@@ -6136,6 +6231,12 @@ int main(int argc, char **argv) {
   /* sigaltstack: p/ o handler reportar STACK OVERFLOW (SIGSEGV na guard page →
      sem espaço na pilha normal p/ rodar o handler → morte silenciosa). */
   g_skipbad = getenv("CUP_SKIPBAD") ? 1 : 0;
+  /* 🧯 commit sob demanda: valores lidos aqui porque getenv()/getpagesize() não
+     podem ser chamados de dentro do handler de sinal. */
+  g_pagesz = sysconf(_SC_PAGESIZE) > 0 ? sysconf(_SC_PAGESIZE) : 4096;
+  g_no_commit_rescue = getenv("OCEAN_NO_COMMIT_RESCUE") ? 1 : 0;
+  if (getenv("OCEAN_COMMIT_RESCUE_MB"))
+    g_commit_rescue_max = atol(getenv("OCEAN_COMMIT_RESCUE_MB")) * 1024 * 1024;
   /* CUP_GCSIG: Boehm GC suspende threads via SIGPWR(30)/restart SIGXCPU(24) p/
      stop-the-world. Nossas threads (criadas via pthread_create_fake, fora do
      registro do GC) recebem SIGPWR com ação DEFAULT = mata o processo (exit 158).
@@ -7435,7 +7536,28 @@ int main(int argc, char **argv) {
         fclose(mi);
       }
       if (avail > 0) {
-        const int pressed = lowmem_kb > 0 && avail < lowmem_kb;
+        /* Nível SOZINHO chega tarde: o relato de campo mostrou a memória caindo
+         * de 113MB para 26MB entre dois sinais, dentro de um carregamento de
+         * cena. Quem denuncia isso a tempo é a TAXA de queda, não o valor. Um
+         * aparelho em regime normal fica parado num patamar e nunca dispara
+         * esta regra; um carregamento que come dezenas de MB por segundo
+         * dispara enquanto ainda há folga para o motor soltar cache. */
+        static long prev_avail = -1;
+        static long fall_kb = -1, early_kb = -1;
+        if (fall_kb < 0) {
+          const char *v = getenv("OCEAN_LOWMEM_FALL_KB");
+          fall_kb = v ? atol(v) : 8000;           /* ~8MB por amostra (1s) */
+          v = getenv("OCEAN_LOWMEM_EARLY_KB");
+          early_kb = v ? atol(v) : 300000;        /* só abaixo de ~300MB */
+        }
+        const long fell = prev_avail > 0 ? prev_avail - avail : 0;
+        const int falling_fast =
+            fall_kb > 0 && avail < early_kb && fell >= fall_kb;
+        prev_avail = avail;
+        const int pressed =
+            (lowmem_kb > 0 && avail < lowmem_kb) || falling_fast;
+        g_mem_pressure = !pressed ? 0
+                         : (lowmem_kb > 0 && avail < lowmem_kb) ? 2 : 1;
         /* A pressão pode começar logo depois de um relatório de regime calmo.
            Sem puxar o próximo para agora, a série densa só entraria 60s depois
            — justamente durante o carregamento que interessa registrar. */
@@ -7448,19 +7570,24 @@ int main(int argc, char **argv) {
           FILE *st = fopen("/proc/self/status", "r");
           if (st) { while (fgets(ln, sizeof ln, st)) sscanf(ln, "VmRSS: %ld", &rss);
             fclose(st); }
-          fprintf(stderr, "[MEM] f=%d avail=%ldMB rss=%ldMB%s\n",
-                  f, avail / 1024, rss / 1024, pressed ? " PRESSAO" : "");
+          fprintf(stderr, "[MEM] f=%d avail=%ldMB rss=%ldMB queda=%ldMB/s%s\n",
+                  f, avail / 1024, rss / 1024, fell / 1024,
+                  pressed ? " PRESSAO" : "");
           fflush(stderr);
-          mem_next_report = f + (pressed ? 150 : 1800);
+          mem_next_report = f + (pressed ? 90 : 1800);
         }
         if (pressed) {
           if (!lowmem_fn_init) { lowmem_fn = jni_find_native("nativeLowMemory"); lowmem_fn_init = 1; }
           if (lowmem_cooldown <= f && lowmem_fn) {
-            fprintf(stderr, "[LOWMEM] MemAvailable=%ldkB < %ldkB -> nativeLowMemory (f=%d)\n",
-                    avail, lowmem_kb, f); fflush(stderr);
+            fprintf(stderr,
+                    "[LOWMEM] MemAvailable=%ldkB (queda %ldkB/s) -> "
+                    "nativeLowMemory (f=%d nivel=%d)\n",
+                    avail, fell, f, g_mem_pressure); fflush(stderr);
             ((void (*)(void *, void *))lowmem_fn)(env, &thiz);
             malloc_trim(0);   /* arenas livres da glibc de volta ao kernel */
-            lowmem_cooldown = f + 300;   /* no máximo um sinal a cada ~10s */
+            /* Espera de 10s deixava passar um carregamento inteiro entre dois
+               sinais. Sob pressão o motor precisa ouvir de novo bem antes. */
+            lowmem_cooldown = f + (g_mem_pressure >= 2 ? 90 : 150);
           }
         }
       }
