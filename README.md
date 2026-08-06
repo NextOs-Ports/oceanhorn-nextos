@@ -25,16 +25,6 @@ Outros CFWs AArch64 (muOS, ROCKNIX, Batocera, Knulli e afins) são atendidos por
 detecção de capacidade, mas ainda **não** têm prova física — não os declaramos
 validados até alguém rodar.
 
-
-
-## Apoie este trabalho / Support this work
-
-Fazer esses ports custa tempo e dinheiro de verdade. Se curte o resultado:
-
-- 💗 **GitHub Sponsors**: [github.com/sponsors/NextOs-Ports](https://github.com/sponsors/NextOs-Ports)
-- ☕ **Ko-fi** (PayPal/cartão): [ko-fi.com/nextos](https://ko-fi.com/nextos)
-- 🇧🇷 **PIX**: [livepix.gg/nextos](https://livepix.gg/nextos)
-
 ## Comunidade / Community
 
 Dúvidas, relatos de bug, ajuda pra rodar o port e novidades dos próximos:
