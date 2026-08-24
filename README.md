@@ -1,4 +1,4 @@
-# Oceanhorn: Chronos Dungeon 4.0b54 — port universal AArch64
+# Oceanhorn: Chronos Dungeon 4.0b54 — port universal AArch64 (framework v2)
 
 **Language / Idioma:** [English](#english) · [Português](#português)
 
@@ -14,7 +14,13 @@ every AArch64 firmware we can reach. Video, audio, memory profile and controls
 are negotiated at runtime from real capabilities: no SDL backend, resolution or
 device name is ever hardcoded.
 
-Status: **PLAYABLE**, physically validated on two very different targets:
+**2.0.0** rebuilds the port on the NextOS **framework v2** (nxbootstrap 0.6.30
+launcher, NXExtract 1.2.18, nxgl 0.2.14 frame proof, nxrelease 0.2.30): a single
+generated launcher replaces the old `run.sh`, and performance profiles target
+the ~1 GB devices.
+
+Status: **PLAYABLE** (heritage of v1.0.x, physically validated on two very
+different targets; 2.0.0 revalidation in progress):
 
 | Aparelho | Vídeo | Resultado |
 |---|---|---|
@@ -24,6 +30,25 @@ Status: **PLAYABLE**, physically validated on two very different targets:
 Outros CFWs AArch64 (muOS, ROCKNIX, Batocera, Knulli e afins) são atendidos por
 detecção de capacidade, mas ainda **não** têm prova física — não os declaramos
 validados até alguém rodar.
+
+## Performance profiles / Perfis de desempenho (2.0.0)
+
+Edit `ports/oceanhorn/port-env.sh` (or export the variable) to pick one:
+
+| `OCEANHORN_PROFILE` | What it does |
+|---|---|
+| `auto` (default) | `low` on ~1 GB devices, `high` elsewhere |
+| `low` | renders at half resolution with **pixel-perfect integer upscale** (`CUP_RENDERSCALE=2`, NEAREST), big atlases as RGBA4444 (`CUP_TEX16`), texture cap 512 (`CUP_TEXHALF`) — this is the anti-lag profile for 1 GB |
+| `medium` | native resolution, texture cap 768 |
+| `high` | everything native |
+
+Any individual `CUP_*` variable exported in the environment (or set in
+`userdata/ocean-env.sh`, which updates never overwrite) wins over the profile.
+`CUP_RS_FILTER=linear` restores the smooth upscale filter if you prefer it.
+The Mali-450 GPU performance pin (all pixel processors at the top official
+level, with a thermal guard) now lives inside the binary and restores the
+original governor values on exit; `OCEAN_GPU_PERFORMANCE=0` disables it.
+
 
 ## Comunidade / Community
 
@@ -61,7 +86,7 @@ The loader reproduces the native Android sequence instead of replacing it:
 | Boot | Unity proxy handles crashed in `JNIBridge.invoke` | Keep ReflectionHelper GC handles and native JNIBridge pointers on their correct, separate paths |
 | Data | Android APK/files paths do not exist on NextOS | Redirect Unity and IL2CPP reads to the original `bin/Data` tree |
 | Rendering | Mali-450 is GLES2-only and some external-alpha sprites disappeared | Preserve the authored GLES2 variants and sample alpha from the decoded main texture |
-| Display | Experimental render scaling damaged framing and image quality | Force native framebuffer output; production never enables render scale |
+| Display | Phase-1 render scaling damaged framing (wrong panel size) and blurred the pixel art (linear filter), and never presented on KMSDRM | 2.0.0: scale FBO sized from the real panel, pixel-perfect NEAREST integer upscale, presented on both fbdev and KMSDRM paths; enabled by the `low` profile |
 | Audio | FMOD asynchronous Android streams ended in `ERR_INTERNAL` | Open the original FSB data synchronously as resident samples before the Android worker fails |
 | Audio output | Android OpenSL ES is unavailable | Bridge OpenSL ES to SDL/PulseAudio, with soft limiting and a validated 1.5× output gain |
 | Controller | Rewired accepted Android events but did not bind left-stick movement | Publish the real Android InputDevice ranges and mirror the left stick to the working d-pad KeyEvent path, with dead zone and hysteresis |

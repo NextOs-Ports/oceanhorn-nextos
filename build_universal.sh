@@ -17,31 +17,43 @@
 set -euo pipefail
 
 PORT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-OUTPUT=${OCEAN_UNIVERSAL_OUTPUT:-oceanhorn-universal}
+OUTPUT=${OCEAN_UNIVERSAL_OUTPUT:-oceanhorn-nextos}
 DIAGNOSTICS=${OCEAN_UNIVERSAL_DIAGNOSTICS:-0}
 
 if [ "${OCEAN_BUSTER_IN_CONTAINER:-0}" != "1" ]; then
-  NEXTOS_ROOT=${NEXTOS_ROOT:-"$HOME/NextOS-Elite-Edition"}
-  NEXTOS_TOOLCHAIN=$(
-    find -H "$NEXTOS_ROOT" -maxdepth 2 -type d \
-      -path '*/build.NextOS-Retro-Elite-Edition-Amlogic-old.aarch64-*/toolchain' \
-      -print | sort -V | tail -1
-  )
-  [ -n "$NEXTOS_TOOLCHAIN" ] ||
-    { echo "toolchain NextOS atual não encontrado em $NEXTOS_ROOT" >&2; exit 1; }
-  NEXTOS_SYSROOT=$NEXTOS_TOOLCHAIN/aarch64-libreelec-linux-gnu/sysroot
-  [ -d "$NEXTOS_SYSROOT" ] ||
-    { echo "sysroot NextOS não encontrado: $NEXTOS_SYSROOT" >&2; exit 1; }
+  NEXTOS_ROOT=${NEXTOS_ROOT:-/mnt/ARQUIVOS/NextOS-Elite-Edition}
+  if [ -z "${NEXTOS_SYSROOT:-}" ]; then
+    # sort -V sozinho escolhe toolchain sem sysroot utilizável (lição do
+    # framework): só aceita candidato que realmente tenha os headers SDL2.
+    NEXTOS_SYSROOT=
+    for _tc in $(find -H "$NEXTOS_ROOT" -maxdepth 2 -type d \
+        -path '*/build.NextOS-Retro-Elite-Edition-Amlogic-old.aarch64-*/toolchain' \
+        -print | sort -V -r); do
+      if [ -f "$_tc/aarch64-libreelec-linux-gnu/sysroot/usr/include/SDL2/SDL.h" ]; then
+        NEXTOS_SYSROOT=$_tc/aarch64-libreelec-linux-gnu/sysroot
+        break
+      fi
+    done
+  fi
+  [ -n "${NEXTOS_SYSROOT:-}" ] && [ -f "$NEXTOS_SYSROOT/usr/include/SDL2/SDL.h" ] ||
+    { echo "sysroot com headers SDL2 não encontrado abaixo de $NEXTOS_ROOT (defina NEXTOS_SYSROOT)" >&2; exit 1; }
   command -v docker >/dev/null 2>&1 ||
     { echo "docker é necessário para a build GLIBC <= 2.30" >&2; exit 1; }
 
-  exec docker run --rm \
+  BUILDER_IMAGE=playfetch-builder:buster
+  BUILDER_IMAGE_ID=sha256:036c7910ea53bc78cc213452afa92fa83d55de1c51ae54f315af58b5a41a45cf
+  ACTUAL_IMAGE_ID=$(docker image inspect "$BUILDER_IMAGE" --format '{{.Id}}' 2>/dev/null) ||
+    { echo "imagem offline do builder ausente: $BUILDER_IMAGE" >&2; exit 1; }
+  [ "$ACTUAL_IMAGE_ID" = "$BUILDER_IMAGE_ID" ] ||
+    { echo "digest da imagem do builder mudou: $ACTUAL_IMAGE_ID" >&2; exit 1; }
+  exec docker run --rm --network none \
     -e OCEAN_BUSTER_IN_CONTAINER=1 \
     -e OCEAN_UNIVERSAL_OUTPUT="$OUTPUT" \
     -e OCEAN_UNIVERSAL_DIAGNOSTICS="$DIAGNOSTICS" \
+    -e LC_ALL=C -e TZ=UTC -e SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1786233600}" \
     -v "$PORT_DIR":/repo \
     -v "$NEXTOS_SYSROOT":/nxsr:ro \
-    debian:buster \
+    "$BUILDER_IMAGE_ID" \
     bash /repo/build_universal.sh
 fi
 
@@ -91,9 +103,10 @@ done > "$STUBDIR/sdl.c"
   -Wl,-soname,libSDL2-2.0.so.0 \
   "$STUBDIR/sdl.c" -o "$STUBDIR/libSDL2.so"
 
+# Sem RPATH/RUNPATH: o nxrelease universal proíbe (o launcher nxbootstrap é
+# quem monta o LD_LIBRARY_PATH com firmware primeiro e GAMEDIR por último).
 "$CC" -fPIE -pie -rdynamic -o "$OUTPUT" "${OBJS[@]}" \
-  -L"$STUBDIR" -lSDL2 -ldl -lm -lpthread -lgcc_s \
-  -Wl,-rpath,'$ORIGIN'
+  -L"$STUBDIR" -lSDL2 -ldl -lm -lpthread -lgcc_s
 
 MAX_GLIBC=$(
   "$READELF" --version-info "$OUTPUT" |

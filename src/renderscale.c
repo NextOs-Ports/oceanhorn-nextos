@@ -36,6 +36,7 @@ typedef char GLchar; typedef ptrdiff_t GLintptr;
 #define GL_RGBA                   0x1908
 #define GL_UNSIGNED_BYTE          0x1401
 #define GL_LINEAR                 0x2601
+#define GL_NEAREST                0x2600
 #define GL_TEXTURE_MIN_FILTER     0x2801
 #define GL_TEXTURE_MAG_FILTER     0x2800
 #define GL_TEXTURE_WRAP_S         0x2802
@@ -142,6 +143,13 @@ void rs_init(void) {
   if (!e) return;
   g_rs_div = atoi(e);
   if (g_rs_div < 2) g_rs_div = 2;
+  /* Resolução REAL do painel: o port-env exporta TER_SCREEN_W/H medidos do
+   * fb0/DRM (640x480 no R36S, 1280x720 no Mali-450). O default 1280x720 só
+   * vale se nada foi medido; CUP_RS_W/H continuam como override manual. */
+  if (getenv("TER_SCREEN_W") && atoi(getenv("TER_SCREEN_W")) > 0)
+    g_scr_w = atoi(getenv("TER_SCREEN_W"));
+  if (getenv("TER_SCREEN_H") && atoi(getenv("TER_SCREEN_H")) > 0)
+    g_scr_h = atoi(getenv("TER_SCREEN_H"));
   if (getenv("CUP_RS_W")) g_scr_w = atoi(getenv("CUP_RS_W"));
   if (getenv("CUP_RS_H")) g_scr_h = atoi(getenv("CUP_RS_H"));
   g_lo_w = g_scr_w / g_rs_div;
@@ -230,8 +238,16 @@ static int rs_lazy_init(void) {
   gl.GenTextures(1, &g_lo_color);
   gl.BindTexture(GL_TEXTURE_2D, g_lo_color);
   gl.TexImage2D(GL_TEXTURE_2D, 0, GL_RGB, g_lo_w, g_lo_h, 0, GL_RGB, GL_UNSIGNED_BYTE, 0);
-  gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  /* Upscale por divisor inteiro = fator exato: NEAREST reconstrói o pixel
+   * art SEM borrão (o LINEAR aqui foi a rejeição visual do render-scale na
+   * fase 1). CUP_RS_FILTER=linear devolve o filtro antigo se algum painel
+   * preferir o suavizado. */
+  {
+    const char *rf = getenv("CUP_RS_FILTER");
+    GLint filt = (rf && strcmp(rf, "linear") == 0) ? GL_LINEAR : GL_NEAREST;
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filt);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filt);
+  }
   gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   /* depth renderbuffer */

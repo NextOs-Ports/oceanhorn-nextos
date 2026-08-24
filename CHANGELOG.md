@@ -1,3 +1,34 @@
+# 2.0.0 — 23/08/2026
+
+Port renascido no **framework v2** do NextOS. Tratado como port novo: o
+`run.sh` deixou de existir.
+
+- **Launcher único gerado pelo nxbootstrap 0.6.30** (lock, logs, extração,
+  handoff do PortMaster, recibo de falha pré-runtime) no lugar do wrapper +
+  `run.sh` da fase 1. A lógica por aparelho mora em `port-env.sh`.
+- **Perfis de desempenho** (`OCEANHORN_PROFILE`: auto/low/medium/high). O
+  `low` — padrão automático em aparelho de ~1 GB — liga a redução de render
+  (`CUP_RENDERSCALE=2`) com upscale inteiro **pixel-perfect** (NEAREST; o
+  borrão do filtro linear foi a rejeição visual da fase 1), texturas RGBA4444
+  e teto 512. É o perfil contra o lag de 1 GB.
+- **Render-scale consertado de verdade**: dimensionado pela resolução REAL do
+  painel (era cravado 1280x720) e apresentado também no caminho KMSDRM/SDL
+  (antes só existia no fbdev — em KMSDRM o quadro ficava preso no FBO).
+- **Pin de GPU Mali-450 no binário** (`gpu_perf.c`): todos os pixel
+  processors no nível oficial máximo + guarda térmica, com restauração
+  garantida na saída (antes era o `run.sh` que fazia e podia não restaurar).
+- **NXExtract 1.2.18** (motor+UI canônicos do v2) e **frame proof nxgl
+  0.2.14** (recibo de lançamento + veredito nos dois caminhos de present).
+- **nxrelease 0.2.30**: pacote determinístico, FRAMEWORK-PIN dos 15
+  componentes, SBOM, auditoria PortMaster/HarbourMaster.
+- Loader carrega as libs direto de `lib/` (morreu a cópia para o root que o
+  FAT-sem-symlink exigia) e continua glibc ≤ 2.27 (build reprodutível em
+  container pinado, sem rede).
+- Sem swap: o port nunca cria swapfile (regra da casa; a economia de RAM vem
+  do perfil low). Sem GC forçado (o GCEVERY crashava no campo).
+- Herda os quatro cortes de memória do 1.0.7 (nunca lançado): falta de
+  memória chegava como violação de acesso.
+
 # Changelog — Oceanhorn: Chronos Dungeon (NextOS Ports)
 
 ## v1.0.7 (Universal) — 05/08/2026

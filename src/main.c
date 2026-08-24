@@ -42,6 +42,20 @@
 #include "astc_decode.h"
 #include "etc2_decode.h"
 #include "util.h"
+#include "nxgl_frame_proof_adapter.h"
+
+/* gpu_perf.c — pin de desempenho da GPU Mali-450 (no-op fora do Amlogic) */
+extern void ocean_gpu_perf_init(void);
+extern void ocean_gpu_perf_shutdown(void);
+
+/* 2.0.0: o payload do NXExtract mora em lib/; abrir de lá DIRETO elimina a
+ * cópia das .so para o root do port (gambiarra de FAT-sem-symlink da fase 1).
+ * Instalação legada com as libs no root continua aceita pelo fallback. */
+static const char *ocean_lib_path(const char *name, char *buf, size_t cap) {
+  snprintf(buf, cap, "lib/%s", name);
+  if (access(buf, R_OK) == 0) return buf;
+  return name;
+}
 #include <link.h>
 
 #define HEAP_MB 96
@@ -1300,6 +1314,11 @@ static void my_exit(int code) {
   uintptr_t tb = (uintptr_t)g_unity_base;
   uintptr_t lr = (uintptr_t)__builtin_return_address(0);
   if (tb && lr >= tb) fprintf(stderr, "[EXIT] (libunity+0x%lx)\n", lr - tb);
+  {  /* saída iniciada pelo jogo: também devolve a GPU e publica o veredito */
+    extern void ocean_gpu_perf_shutdown(void);
+    ocean_gpu_perf_shutdown();
+    nxgl_frame_proof_publish();
+  }
   fsync(2);
   _exit(code);
 }
@@ -3087,8 +3106,38 @@ static inline void ter_screenshot_maybe(void) {}
 #endif
 static void ter_nuke_methods(void);
 static void ter_jobworkers0(void);
+
+/* Framework v2 (nxgl 0.2.14): prova de frame pré-swap, comum aos dois
+ * caminhos de present (fbdev/my_eglSwapBuffers e SDL/egl_shim). Amostra nos
+ * quadros 300/600/900 — o primeiro ainda pode ser um título legitimamente
+ * escuro — e publica após cada amostra (um run automatizado morre por
+ * SIGKILL, não por saída limpa). */
+void ocean_frame_proof_tick(void) {
+  static unsigned long f;
+  f++;
+  if (f == 300 || f == 600 || f == 900) {
+    static void (*p_gi)(unsigned, int *);
+    if (!p_gi) p_gi = (void *)dlsym(RTLD_DEFAULT, "glGetIntegerv");
+    int vp[4] = {0, 0, 0, 0};
+    if (p_gi) p_gi(0x0BA2 /* GL_VIEWPORT */, vp);
+    if (vp[2] > 0 && vp[3] > 0) {
+      nxgl_frame_proof_sample(vp[2], vp[3]);
+      nxgl_frame_proof_publish();
+    }
+  }
+}
+
 /* chamado por egl_shim_SwapBuffers na thread DONA da window (captura o buffer apresentado) */
-void ter_shot_hook(void) { ter_nuke_methods(); ter_jobworkers0(); ter_screenshot_maybe(); }
+void ter_shot_hook(void) {
+  ter_nuke_methods();
+  ter_jobworkers0();
+  /* KMSDRM/SDL: o upscale do render-scale precisa acontecer AQUI — na fase 1
+   * o rs_present só existia no caminho fbdev, então ligar CUP_RENDERSCALE em
+   * KMSDRM deixava o quadro preso no FBO lo-res (tela preta). */
+  rs_present();
+  ocean_frame_proof_tick();
+  ter_screenshot_maybe();
+}
 
 /* native_pad.c: estado do pad (0=A 1=B 2=X 3=Y 4=LB 5=RB 6=Back 7=Start 8=L3 9=R3 10..13=dpad U D L R) */
 extern int np_btn(int b), np_btn_down(int b);
@@ -4060,6 +4109,7 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
         if (scissor) hc_r_Enable(0x0C11);
     }
   }
+  ocean_frame_proof_tick();   /* framework v2: amostra o quadro final pré-swap */
   if (!r_eglSwapBuffers) r_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
   return r_eglSwapBuffers ? r_eglSwapBuffers(dpy, surf) : 1;
 }
@@ -6183,6 +6233,11 @@ static void *fmod_audio_thread(void *arg) {
 int main(int argc, char **argv) {
   (void)argc; (void)argv;
   setvbuf(stdout, NULL, _IONBF, 0); setvbuf(stderr, NULL, _IONBF, 0);
+  /* Framework v2: recibo de lançamento ANTES de qualquer GL poder falhar —
+   * sem ele um preto legítimo de SSH é indistinguível de port quebrado. */
+  nxgl_frame_proof_launch_receipt();
+  /* Pin de desempenho da GPU Mali-450 (restaurado no shutdown). */
+  ocean_gpu_perf_init();
   /* Cache before Unity starts worker threads so every Android path resolves
      against the launcher's initial root on NextOS and PortMaster alike. */
   const char *game_dir = hc_game_dir();
@@ -6280,7 +6335,9 @@ int main(int argc, char **argv) {
     char line[192]; int n = 0, same = 1;
     for (size_t i = 0; i < sizeof ref_libs / sizeof *ref_libs; i++) {
       struct stat st;
-      long got = stat(ref_libs[i].nm, &st) == 0 ? (long)st.st_size : -1;
+      char pth[64];
+      long got = stat(ocean_lib_path(ref_libs[i].nm, pth, sizeof pth), &st) == 0
+                     ? (long)st.st_size : -1;
       if (got != ref_libs[i].ref) same = 0;
       n += snprintf(line + n, sizeof line - (size_t)n, "%s%s=%ld",
                     i ? " " : "", ref_libs[i].nm, got);
@@ -6303,7 +6360,9 @@ int main(int argc, char **argv) {
   void *heap = mmap(NULL, hs, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (heap == MAP_FAILED) { perror("mmap"); return 1; }
   fprintf(stderr, "[F0] heap %dMB @ %p, carregando libunity.so...\n", HEAP_MB, heap);
-  if (so_load("libunity.so", heap, hs) < 0) { fprintf(stderr, "so_load libunity FALHOU\n"); return 1; }
+  { char up[64];
+    if (so_load(ocean_lib_path("libunity.so", up, sizeof up), heap, hs) < 0) {
+      fprintf(stderr, "so_load libunity FALHOU\n"); return 1; } }
   fprintf(stderr, "[F0] libunity: text=%p+%zu data=%p+%zu\n", text_base, text_size, data_base, data_size);
   g_unity_data = (uintptr_t)data_base;
   if (so_relocate() < 0) { fprintf(stderr, "relocate FALHOU\n"); return 1; }
@@ -6845,7 +6904,9 @@ int main(int argc, char **argv) {
   size_t i2s = 96UL * 1024 * 1024;
   void *i2heap = mmap(NULL, i2s, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   g_i2heap_base = (uintptr_t)i2heap; g_i2heap_size = i2s;
-  if (i2heap != MAP_FAILED && so_load("libil2cpp.so", i2heap, i2s) >= 0) {
+  char i2p[64];
+  if (i2heap != MAP_FAILED &&
+      so_load(ocean_lib_path("libil2cpp.so", i2p, sizeof i2p), i2heap, i2s) >= 0) {
     g_il2cpp_base = (uintptr_t)text_base;
     g_alloc_ib = g_il2cpp_base;
     fprintf(stderr, "[F1] libil2cpp: text=%p+%zu\n", text_base, text_size);
@@ -7635,5 +7696,7 @@ int main(int argc, char **argv) {
   if (getenv("HC_NATIVE_DONE") && (fn = jni_find_native("nativeDone")))
     ((unsigned char (*)(void *, void *))fn)(env, &thiz);
   hc_input_shutdown();
+  ocean_gpu_perf_shutdown();     /* devolve min_freq/min_pp originais da GPU */
+  nxgl_frame_proof_publish();    /* veredito final do frame proof (idempotente) */
   _exit(0);  /* hard exit — destrutores do .so crasham no teardown normal */
 }
