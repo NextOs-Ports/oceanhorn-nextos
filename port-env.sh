@@ -5,11 +5,11 @@
 #  Pick ONE:   auto | low | medium | high      (default: auto)
 #
 #    auto   = low em aparelho de ~1 GB, high nos demais (padrão).
-#    low    = aparelhos de ~1 GB: render interno na metade da resolução com
-#             upscale inteiro (pixel-perfect), atlases grandes em RGBA4444 e
-#             teto de textura 512. É o perfil contra o lag de 1 GB.
-#    medium = texturas com teto 768, sem redução de render.
-#    high   = tudo nativo: resolução cheia, texturas cheias.
+#    low    = aparelhos de ~1 GB: economia de textura 2x — atlases grandes
+#             com teto 512 e RGBA4444 (metade da RAM de textura, recorte do
+#             pixel art intacto). É o perfil contra o lag de 1 GB.
+#    medium = economia 1,5x: teto de textura 768.
+#    high   = tudo nativo (1x): resolução e texturas cheias.
 #
 #  Como mudar / How to change:
 #    1) Edite a linha OCEANHORN_PROFILE abaixo; OU
@@ -50,21 +50,22 @@ export OCEANHORN_PROFILE
 
 case "$OCEANHORN_PROFILE" in
   low)
-    # Redução de render (fill-rate): metade da resolução com upscale
-    # pixel-perfect (filtro NEAREST em divisor inteiro — 2.0.0).
-    CUP_RENDERSCALE="${CUP_RENDERSCALE:-2}"
+    # Economia de textura 2x: teto 512 + RGBA4444 nos atlases grandes.
     CUP_TEXHALF="${CUP_TEXHALF:-512}"
     [ "$_oc_drm" -eq 1 ] && CUP_TEX16="${CUP_TEX16:-1}"
     ;;
   medium)
-    CUP_RENDERSCALE="${CUP_RENDERSCALE:-0}"
+    # Economia 1,5x: teto 768, formato nativo.
     CUP_TEXHALF="${CUP_TEXHALF:-768}"
     ;;
   high)
-    CUP_RENDERSCALE="${CUP_RENDERSCALE:-0}"
     CUP_TEXHALF="${CUP_TEXHALF:-0}"
     ;;
 esac
+# O render interno reduzido (CUP_RENDERSCALE) NÃO faz parte de nenhum perfil:
+# no caminho ES3/KMSDRM a Unity encolhe o próprio viewport e a tela vira um
+# quadrado 1/4 (medido no GO-Super 24/08). Continua disponível como chave
+# manual experimental para o Mali-450/fbdev, onde é o caminho provado.
 [ "${CUP_RENDERSCALE:-0}" != 0 ] && export CUP_RENDERSCALE || unset CUP_RENDERSCALE
 [ "${CUP_TEXHALF:-0}" != 0 ] && export CUP_TEXHALF || unset CUP_TEXHALF
 [ -n "${CUP_TEX16:-}" ] && [ "${CUP_TEX16}" != 0 ] && export CUP_TEX16 || unset CUP_TEX16

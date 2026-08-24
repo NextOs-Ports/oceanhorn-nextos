@@ -1,4 +1,4 @@
-# 2.0.0 — 23/08/2026
+# 2.0.0 — 24/08/2026
 
 Port renascido no **framework v2** do NextOS. Tratado como port novo: o
 `run.sh` deixou de existir.
@@ -6,14 +6,17 @@ Port renascido no **framework v2** do NextOS. Tratado como port novo: o
 - **Launcher único gerado pelo nxbootstrap 0.6.30** (lock, logs, extração,
   handoff do PortMaster, recibo de falha pré-runtime) no lugar do wrapper +
   `run.sh` da fase 1. A lógica por aparelho mora em `port-env.sh`.
-- **Perfis de desempenho** (`OCEANHORN_PROFILE`: auto/low/medium/high). O
-  `low` — padrão automático em aparelho de ~1 GB — liga a redução de render
-  (`CUP_RENDERSCALE=2`) com upscale inteiro **pixel-perfect** (NEAREST; o
-  borrão do filtro linear foi a rejeição visual da fase 1), texturas RGBA4444
-  e teto 512. É o perfil contra o lag de 1 GB.
-- **Render-scale consertado de verdade**: dimensionado pela resolução REAL do
-  painel (era cravado 1280x720) e apresentado também no caminho KMSDRM/SDL
-  (antes só existia no fbdev — em KMSDRM o quadro ficava preso no FBO).
+- **Perfis de desempenho por ECONOMIA DE TEXTURA** (`OCEANHORN_PROFILE`:
+  auto/low/medium/high): `low` — padrão automático em ~1 GB — corta 2x
+  (atlases grandes teto 512 + RGBA4444, metade da RAM de textura, recorte do
+  pixel art intacto); `medium` corta 1,5x (teto 768); `high` = tudo nativo.
+- **Render interno reduzido ficou FORA dos perfis**: medido no GO-Super
+  (ES3/KMSDRM), a Unity encolhia o próprio viewport e a tela virava um
+  quadrado de 1/4. `CUP_RENDERSCALE` segue como chave manual experimental
+  para o Mali-450/fbdev — a receita provada lá — agora com três consertos:
+  tamanho do painel real (não mais 1280x720 cravado), upscale NEAREST
+  pixel-perfect (100,0% dos blocos 2x2 idênticos na captura; adeus borrão;
+  `CUP_RS_FILTER=linear` volta) e apresentação também no caminho KMSDRM.
 - **Pin de GPU Mali-450 no binário** (`gpu_perf.c`): todos os pixel
   processors no nível oficial máximo + guarda térmica, com restauração
   garantida na saída (antes era o `run.sh` que fazia e podia não restaurar).

@@ -19,11 +19,11 @@ launcher, NXExtract 1.2.18, nxgl 0.2.14 frame proof, nxrelease 0.2.30): a single
 generated launcher replaces the old `run.sh`, and performance profiles target
 the ~1 GB devices.
 
-Status: **PLAYABLE**. 2.0.0 was device-proven on dArkOS RE / R36S-class
+Status: **PLAYABLE**. 2.0.0 was device-proven on dArkOS RE / GO-Super
 (RK3326, Mali-G31, 1 GB): virgin NXExtract install (`NXE0000`), `low` profile
-engaged automatically (render-scale 320x240 pixel-perfect on the 640x480
-panel, frame proof 100% non-black), stable 350 MB RSS and clean
-`SELECT+START` exit. The v1.0.x heritage validation:
+engaged automatically (2x texture economy), frame proof 100% non-black,
+stable ~350 MB RSS and clean `SELECT+START` exit. The v1.0.x heritage
+validation:
 
 | Aparelho | Vídeo | Resultado |
 |---|---|---|
@@ -41,13 +41,18 @@ Edit `ports/oceanhorn/port-env.sh` (or export the variable) to pick one:
 | `OCEANHORN_PROFILE` | What it does |
 |---|---|
 | `auto` (default) | `low` on ~1 GB devices, `high` elsewhere |
-| `low` | renders at half resolution with **pixel-perfect integer upscale** (`CUP_RENDERSCALE=2`, NEAREST), big atlases as RGBA4444 (`CUP_TEX16`), texture cap 512 (`CUP_TEXHALF`) — this is the anti-lag profile for 1 GB |
-| `medium` | native resolution, texture cap 768 |
-| `high` | everything native |
+| `low` | **2x texture economy**: big atlases capped at 512 (`CUP_TEXHALF`) and stored as RGBA4444 (`CUP_TEX16`) — half the texture RAM with the pixel-art cutout intact. This is the anti-lag profile for 1 GB |
+| `medium` | **1.5x economy**: texture cap 768, native format |
+| `high` | everything native (1x) |
 
 Any individual `CUP_*` variable exported in the environment (or set in
 `userdata/ocean-env.sh`, which updates never overwrite) wins over the profile.
-`CUP_RS_FILTER=linear` restores the smooth upscale filter if you prefer it.
+The reduced internal render (`CUP_RENDERSCALE`) is **not** part of any
+profile: on the ES3/KMSDRM path Unity shrinks its own viewport and the screen
+becomes a quarter-size square (measured on device). It remains available as a
+manual experimental switch for the Mali-450/fbdev path, where it is the
+proven recipe (pixel-perfect NEAREST upscale, `CUP_RS_FILTER=linear` opts
+back into smoothing).
 The Mali-450 GPU performance pin (all pixel processors at the top official
 level, with a thermal guard) now lives inside the binary and restores the
 original governor values on exit; `OCEAN_GPU_PERFORMANCE=0` disables it.
