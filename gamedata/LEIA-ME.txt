@@ -1,2 +1,0 @@
-Este repositório não contém o jogo.
-Veja INSTALLATION.md: os .so e a árvore bin/Data vêm do seu APK legal.

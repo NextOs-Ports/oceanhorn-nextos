@@ -80,7 +80,7 @@ trap 'rm -rf "$OBJDIR" "$STUBDIR"' EXIT
 OBJS=()
 DIAGNOSTIC_FLAGS=()
 if [ "$DIAGNOSTICS" = "1" ]; then
-  DIAGNOSTIC_FLAGS=(-DOCEAN_DEV_DIAGNOSTICS=1)
+  DIAGNOSTIC_FLAGS=(-DHC_DEV_DIAGNOSTICS=1)
 fi
 for source in src/*.c; do
   object="$OBJDIR/$(basename "${source%.c}").o"

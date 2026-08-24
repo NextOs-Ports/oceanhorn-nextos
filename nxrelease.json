@@ -74,7 +74,7 @@
         "libpthread.so.0"
       ],
       "provenance": "port build script; framework pinned by FRAMEWORK-PIN.json",
-      "sha256": "df28b2bf42b85c9539bb349d6642692d96e8825a62fc3ac5ad942bb3519d78ee",
+      "sha256": "ce1052857c71b0638a09e419ce4f9e6f519422c9be0bcbf6aa84b6e7f1ce328b",
       "soname": null,
       "source": "oceanhorn-nextos",
       "target": "oceanhorn/oceanhorn-nextos"
@@ -82,7 +82,7 @@
     {
       "kind": "payload",
       "mode": "0644",
-      "sha256": "50b71233ba84f68a73a5994e0165bf019cba512f849fdbb6e0a608cd8a5519c4",
+      "sha256": "9b2dae3567a027d1065ec2fe20be7b0fdf2164ed9ae15f32df46944575e24e55",
       "source": "README.md",
       "target": "oceanhorn/README.md"
     },
@@ -163,6 +163,13 @@
       "sha256": "dbd60853647966ce94c7df14edcd43d40faa1467ee4efbcaa13d973fa664a4a2",
       "source": "adapter/adapter-contract.json",
       "target": "oceanhorn/adapter/adapter-contract.json"
+    },
+    {
+      "kind": "payload",
+      "mode": "0644",
+      "sha256": "ff398cd8f93b945e5330ca1a78da8afadcd8e11f3f47738f25194ef5c5ca6099",
+      "source": "gamedata/README.txt",
+      "target": "oceanhorn/gamedata/README.txt"
     },
     {
       "kind": "license-notice",

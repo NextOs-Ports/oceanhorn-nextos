@@ -19,8 +19,11 @@ launcher, NXExtract 1.2.18, nxgl 0.2.14 frame proof, nxrelease 0.2.30): a single
 generated launcher replaces the old `run.sh`, and performance profiles target
 the ~1 GB devices.
 
-Status: **PLAYABLE** (heritage of v1.0.x, physically validated on two very
-different targets; 2.0.0 revalidation in progress):
+Status: **PLAYABLE**. 2.0.0 was device-proven on dArkOS RE / R36S-class
+(RK3326, Mali-G31, 1 GB): virgin NXExtract install (`NXE0000`), `low` profile
+engaged automatically (render-scale 320x240 pixel-perfect on the 640x480
+panel, frame proof 100% non-black), stable 350 MB RSS and clean
+`SELECT+START` exit. The v1.0.x heritage validation:
 
 | Aparelho | Vídeo | Resultado |
 |---|---|---|

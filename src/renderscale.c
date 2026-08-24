@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <stddef.h>
 #include <dlfcn.h>
 
@@ -424,6 +425,34 @@ void rs_present(void) {
   gl.BindTexture(GL_TEXTURE_2D, g_lo_color);
   gl.Uniform1i(g_u_tex, 0);
   gl.DrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+#if HC_DEV_DIAGNOSTICS
+  /* Diag-only: captura a TELA REAL logo após o blit (fb 0 de verdade bound),
+   * disparada por /tmp/rsshot. É a única forma de fotografar o upscale — o
+   * shot normal lê o FBO lo-res por causa do redirect de bind. */
+  {
+    if (access("/tmp/rsshot", 0) == 0) {
+      unlink("/tmp/rsshot");
+      static void (*p_rp)(GLint,GLint,GLsizei,GLsizei,GLenum,GLenum,void*);
+      if (!p_rp) p_rp = gsym("glReadPixels");
+      unsigned char *buf = malloc((size_t)g_scr_w * g_scr_h * 4);
+      if (p_rp && buf) {
+        p_rp(0, 0, g_scr_w, g_scr_h, 0x1908 /*RGBA*/, 0x1401, buf);
+        FILE *fo = fopen("rs-shot.ppm", "wb");
+        if (fo) {
+          fprintf(fo, "P6\n%d %d\n255\n", g_scr_w, g_scr_h);
+          for (int y = g_scr_h - 1; y >= 0; y--)
+            for (int x = 0; x < g_scr_w; x++)
+              fwrite(buf + ((size_t)y * g_scr_w + x) * 4, 1, 3, fo);
+          fclose(fo);
+          fprintf(stderr, "[RS] rs-shot.ppm %dx%d gravado (tela real)\n",
+                  g_scr_w, g_scr_h);
+        }
+      }
+      free(buf);
+    }
+  }
+#endif
 
   /* Restaura o atributo antes do ARRAY_BUFFER global, pois o binding faz
      parte do próprio glVertexAttribPointer. */
