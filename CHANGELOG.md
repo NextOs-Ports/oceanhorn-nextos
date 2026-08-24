@@ -6,17 +6,22 @@ Port renascido no **framework v2** do NextOS. Tratado como port novo: o
 - **Launcher único gerado pelo nxbootstrap 0.6.30** (lock, logs, extração,
   handoff do PortMaster, recibo de falha pré-runtime) no lugar do wrapper +
   `run.sh` da fase 1. A lógica por aparelho mora em `port-env.sh`.
-- **Perfis de desempenho por ECONOMIA DE TEXTURA** (`OCEANHORN_PROFILE`:
-  auto/low/medium/high): `low` — padrão automático em ~1 GB — corta 2x
-  (atlases grandes teto 512 + RGBA4444, metade da RAM de textura, recorte do
-  pixel art intacto); `medium` corta 1,5x (teto 768); `high` = tudo nativo.
-- **Render interno reduzido ficou FORA dos perfis**: medido no GO-Super
-  (ES3/KMSDRM), a Unity encolhia o próprio viewport e a tela virava um
-  quadrado de 1/4. `CUP_RENDERSCALE` segue como chave manual experimental
-  para o Mali-450/fbdev — a receita provada lá — agora com três consertos:
-  tamanho do painel real (não mais 1280x720 cravado), upscale NEAREST
-  pixel-perfect (100,0% dos blocos 2x2 idênticos na captura; adeus borrão;
-  `CUP_RS_FILTER=linear` volta) e apresentação também no caminho KMSDRM.
+- **Perfis de desempenho** (`OCEANHORN_PROFILE`: auto/low/medium/high):
+  `low` — padrão automático em ~1 GB — render na metade da resolução com
+  upscale inteiro pixel-perfect (o remédio do fill-rate) + textura 2x
+  (teto 512 + RGBA4444); `medium` = textura 1,5x (teto 768), render nativo;
+  `high` = tudo nativo.
+- **Render reduzido no perfil low, agora certo nos DOIS caminhos.** No
+  ES3/KMSDRM a Unity não passa pelos wrappers de viewport (vp=0 medido) e
+  ficava meio-adaptada — a tela virava um quadrado de 1/4. Conserto = **modo
+  LO-REPORT**: todas as superfícies de consulta (ANativeWindow,
+  DisplayMetrics, eglQuerySurface) respondem a resolução BAIXA desde o 1º
+  frame; a engine desenha coerente no FBO lo e o blit sobe pixel-perfect
+  para o painel real (título fullscreen 100,0% dos blocos 2x2 idênticos,
+  provado por captura no GO-Super). No fbdev/Mali-450 permanece o modo
+  legado (engine na resolução cheia + escala de viewport), que é o provado
+  lá. Mais: tamanho do painel real (não mais 1280x720 cravado), NEAREST em
+  divisor inteiro (`CUP_RS_FILTER=linear` volta ao suavizado).
 - **Pin de GPU Mali-450 no binário** (`gpu_perf.c`): todos os pixel
   processors no nível oficial máximo + guarda térmica, com restauração
   garantida na saída (antes era o `run.sh` que fazia e podia não restaurar).

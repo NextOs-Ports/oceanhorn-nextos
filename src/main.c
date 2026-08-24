@@ -1367,6 +1367,7 @@ static int my_alog_vprint(int prio, const char *tag, const char *fmt, va_list ap
    Unity cria a window surface direto no fb0 (sem shim). CUP_SHIMEGL=1 volta pro fake int. */
 static struct { unsigned short w, h; } g_fbdev_win = {0, 0};
 static int cup_use_kmsdrm(void);  /* fwd: decide fbdev vs kmsdrm (def. abaixo) */
+extern int rs_lo_adjust(int);     /* renderscale: modo LO-REPORT (def. renderscale.c) */
 extern void egl_shim_get_size(int *, int *);
 static int g_anw = 0xA11;
 static int ter_env_positive_int_main(const char *name) {
@@ -1408,7 +1409,7 @@ static int ter_window_w(void) {
   int sw = 0, sh = 0;
   if (cup_use_kmsdrm()) {
     egl_shim_get_size(&sw, &sh);
-    if (sw > 0) return sw;
+    if (sw > 0) return rs_lo_adjust(sw);
   }
   if (g_fbdev_win.w > 0) return g_fbdev_win.w;
   return ter_native_screen_size_main(&sw, &sh) ? sw : 0;
@@ -1417,7 +1418,7 @@ static int ter_window_h(void) {
   int sw = 0, sh = 0;
   if (cup_use_kmsdrm()) {
     egl_shim_get_size(&sw, &sh);
-    if (sh > 0) return sh;
+    if (sh > 0) return rs_lo_adjust(sh);
   }
   if (g_fbdev_win.h > 0) return g_fbdev_win.h;
   return ter_native_screen_size_main(&sw, &sh) ? sh : 0;
@@ -1436,6 +1437,8 @@ static void *my_aw_fromSurface(void *e, void *s) { (void)e; (void)s;
 static int my_aw_setgeom(void *w, int a, int b, int c) {
   (void)w; (void)c;
   if (a > 0 && b > 0) {
+    fprintf(stderr, "[AW] setBuffersGeometry %dx%d (fmt=%d) — antes %ux%u\n",
+            a, b, c, g_fbdev_win.w, g_fbdev_win.h);
     g_fbdev_win.w = (unsigned short)a;
     g_fbdev_win.h = (unsigned short)b;
   }
@@ -3061,6 +3064,8 @@ static void *ds_watchdog(void *a) {
 extern void rs_init(void); extern int rs_enabled(void);
 extern void rs_BindFramebuffer(unsigned, unsigned);
 extern void rs_Viewport(int, int, int, int);
+extern void rs_set_report_lo(int);
+extern int rs_report_lo(void);
 extern void rs_Scissor(int, int, int, int);
 extern void rs_present(void);
 static unsigned (*r_eglSwapBuffers)(void *, void *);
@@ -4255,6 +4260,9 @@ void *hc_gl_route_proc(const char *name, void *real) {
 
 static void ds_init(void) {
   rs_init();   /* CUP_RENDERSCALE: parseia env (o FBO lo-res cria-se lazy no 1º bind) */
+  /* ES3/KMSDRM: a engine não passa pelos wrappers de viewport — reportar o
+   * tamanho LO-RES desde o início (ver renderscale.c, modo LO-REPORT). */
+  if (rs_enabled() && cup_use_kmsdrm()) rs_set_report_lo(1);
   if (getenv("HC_NO_SHADER_PRECISION_FIX")) g_hc_shader_precision_fix = 0;
   if (getenv("HC_NO_TEXTURE_DECODE")) g_texture_software_decode = 0;
   if (getenv("HC_KEEP_SOURCE_MIPS")) g_texture_regenerate_mips = 0;

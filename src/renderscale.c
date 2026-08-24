@@ -161,6 +161,31 @@ void rs_init(void) {
 int rs_enabled(void) { return g_rs_div >= 2; }
 int rs_logical0(void) { return g_rs_div >= 2 && g_logical0 && !g_in_blit; }
 
+/* ---- modo LO-REPORT (caminho ES3/KMSDRM) -------------------------------
+ * No fbdev/GLES2 (Mali-450) a engine resolve gl* pela tabela wrappada e o
+ * par redirect+escala-de-viewport funciona com a engine acreditando na
+ * resolução CHEIA. No ES3/KMSDRM a Unity NÃO passa pelos wrappers de
+ * viewport (medido: vp=0) e descobre o tamanho por fora — ficava meio
+ * adaptada: cedo desenhava 640x480 num FBO de 320x240 (quadrado 1/4 na
+ * tela). Neste modo a verdade se inverte: TODAS as superfícies de consulta
+ * (ANativeWindow, DisplayMetrics, eglQuerySurface) respondem o tamanho
+ * LO-RES desde o primeiro frame; a Unity desenha coerente no FBO lo e o
+ * blit sobe para o painel real. Escala de viewport/scissor fica DESLIGADA
+ * (a engine já emite tudo em lo). */
+static int g_report_lo = 0;
+void rs_set_report_lo(int on) {
+  g_report_lo = (on && g_rs_div >= 2) ? 1 : 0;
+  if (g_report_lo)
+    fprintf(stderr, "[RS] modo LO-REPORT: engine enxerga %dx%d, painel %dx%d\n",
+            g_lo_w, g_lo_h, g_scr_w, g_scr_h);
+}
+int rs_report_lo(void) { return g_report_lo; }
+int rs_divisor(void) { return g_rs_div >= 2 ? g_rs_div : 1; }
+/* Divide uma medida de tela quando o modo LO-REPORT está ativo. */
+int rs_lo_adjust(int v) {
+  return (g_report_lo && g_rs_div >= 2 && v > 0) ? v / g_rs_div : v;
+}
+
 static const char *VS =
   "attribute vec4 aVertex; varying vec2 vUV;"
   "void main(){ vUV=aVertex.zw; gl_Position=vec4(aVertex.xy,0.0,1.0); }";
@@ -321,7 +346,7 @@ void rs_BindFramebuffer(GLenum target, GLuint fb) {
 /* hook de glViewport: escala enquanto a tela lógica está bound */
 void rs_Viewport(GLint x, GLint y, GLsizei w, GLsizei h) {
   if (!gl.Viewport) gl.Viewport = gsym("glViewport");
-  if (!g_in_blit && g_rs_div >= 2 && g_logical0) {
+  if (!g_in_blit && g_rs_div >= 2 && g_logical0 && !g_report_lo) {
     g_n_vp++;
     gl.Viewport(x / g_rs_div, y / g_rs_div, w / g_rs_div, h / g_rs_div);
   } else {
@@ -332,7 +357,7 @@ void rs_Viewport(GLint x, GLint y, GLsizei w, GLsizei h) {
 /* hook de glScissor: escala enquanto a tela lógica está bound (UI/masking) */
 void rs_Scissor(GLint x, GLint y, GLsizei w, GLsizei h) {
   if (!gl.Scissor) gl.Scissor = gsym("glScissor");
-  if (!g_in_blit && g_rs_div >= 2 && g_logical0) {
+  if (!g_in_blit && g_rs_div >= 2 && g_logical0 && !g_report_lo) {
     gl.Scissor(x / g_rs_div, y / g_rs_div, w / g_rs_div, h / g_rs_div);
   } else {
     gl.Scissor(x, y, w, h);

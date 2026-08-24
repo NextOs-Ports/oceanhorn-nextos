@@ -806,11 +806,12 @@ EGLBoolean egl_shim_DestroyContext(EGLDisplay dpy, EGLContext ctx) {
   return EGL_TRUE;
 }
 
+extern int rs_lo_adjust(int);  /* renderscale: modo LO-REPORT divide a medida */
 EGLBoolean egl_shim_QuerySurface(EGLDisplay dpy, EGLSurface surface,
                                   EGLint attribute, EGLint *value) {
   (void)dpy; (void)surface;
-  if (attribute == 0x3057 && value) *value = SCREEN_WIDTH;
-  else if (attribute == 0x3056 && value) *value = SCREEN_HEIGHT;
+  if (attribute == 0x3057 && value) *value = rs_lo_adjust(SCREEN_WIDTH);
+  else if (attribute == 0x3056 && value) *value = rs_lo_adjust(SCREEN_HEIGHT);
   return EGL_TRUE;
 }
 

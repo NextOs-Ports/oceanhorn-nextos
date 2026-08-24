@@ -95,18 +95,25 @@ static int ter_read_display_pair(const char *path, int *w, int *h) {
   return 1;
 }
 
+extern int rs_lo_adjust(int);  /* renderscale: modo LO-REPORT divide a medida */
 static void ter_display_size(int *w, int *h) {
   static int cached_w = -1, cached_h = -1;
-  if (cached_w >= 0 && cached_h >= 0) { *w = cached_w; *h = cached_h; return; }
+  if (cached_w >= 0 && cached_h >= 0) {
+    *w = rs_lo_adjust(cached_w); *h = rs_lo_adjust(cached_h); return;
+  }
   int ew = ter_env_positive_int("TER_SCREEN_W");
   int eh = ter_env_positive_int("TER_SCREEN_H");
   if (!ew) ew = ter_env_positive_int("TER_SCREEN_WIDTH");
   if (!eh) eh = ter_env_positive_int("TER_SCREEN_HEIGHT");
-  if (ew > 0 && eh > 0) { cached_w = ew; cached_h = eh; *w = ew; *h = eh; return; }
+  if (ew > 0 && eh > 0) {
+    cached_w = ew; cached_h = eh;
+    *w = rs_lo_adjust(ew); *h = rs_lo_adjust(eh); return;
+  }
   if (ter_read_display_pair("/sys/class/graphics/fb0/mode", &ew, &eh) ||
       ter_read_display_pair("/sys/class/graphics/fb0/modes", &ew, &eh) ||
       ter_read_display_pair("/sys/class/graphics/fb0/virtual_size", &ew, &eh)) {
-    cached_w = ew; cached_h = eh; *w = ew; *h = eh; return;
+    cached_w = ew; cached_h = eh;
+    *w = rs_lo_adjust(ew); *h = rs_lo_adjust(eh); return;
   }
   cached_w = 0; cached_h = 0; *w = 0; *h = 0;
 }
