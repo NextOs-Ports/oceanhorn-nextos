@@ -1,3 +1,23 @@
+# 2.0.1 — 26/08/2026
+
+- **dArkOSRE/RK3326 volta a abrir sem variável manual.** Algumas imagens
+  oferecem um dispatcher EGL versionado sem driver, enquanto o Mali-G31
+  funcional está nos nomes portáveis `libEGL.so` e `libGLESv2.so`. O runtime
+  tenta primeiro a pilha da firmware; somente se todas as combinações
+  SDL/KMSDRM falharem, e se firmware/usuário não tiverem escolhido providers,
+  encerra o vídeo e faz um único `exec` limpo com o par portável. Não nasce uma
+  segunda instância e o fluxo Unity/Android recomeça inteiro na ordem nativa.
+- A decisão vem da mesma recuperação canônica já provada pela NXSplash 0.1.2
+  no próprio boot. Mali-450/fbdev e pilhas KMSDRM que abrem normalmente não
+  entram no reparo.
+- Os perfis de memória/desempenho `auto`, `low`, `medium` e `high` permanecem
+  intactos. No aparelho de 1 GB, `auto` continua escolhendo `low`: render
+  320×240 com upscale pixel-perfect para 640×480, texturas limitadas a 512 e
+  RGBA4444.
+- Release reconstruída e auditada a partir da tag imutável
+  `framework-v2-onda1` (nxbootstrap 0.6.30, NXExtract 1.2.18, nxgl 0.2.14 e
+  nxrelease 0.2.30).
+
 # 2.0.0 — 24/08/2026
 
 Port renascido no **framework v2** do NextOS. Tratado como port novo: o

@@ -74,7 +74,7 @@
         "libpthread.so.0"
       ],
       "provenance": "port build script; framework pinned by FRAMEWORK-PIN.json",
-      "sha256": "1e4e63ac9d795a1783e5b67f90c80175903bd0b297ed61ec94eee8c48ed04efa",
+      "sha256": "8a3544c7296e770f388592b79023ed71c8aa2c4ef2de31a39859d0fab8408fbc",
       "soname": null,
       "source": "oceanhorn-nextos",
       "target": "oceanhorn/oceanhorn-nextos"
@@ -82,14 +82,14 @@
     {
       "kind": "payload",
       "mode": "0644",
-      "sha256": "f56864cc4101acada7ac7aa4ecf8af0354beb31b77bef30b4f81651da099aee8",
+      "sha256": "e4d81319bf7384934ed1edad1dfc4c32761fc2f9fa64a8ee592cdff01f5d6b30",
       "source": "README.md",
       "target": "oceanhorn/README.md"
     },
     {
       "kind": "payload",
       "mode": "0644",
-      "sha256": "38dc0d62ab806c4edd9c9173c635865bca34dc223d54f638e182e00fbfdbcc69",
+      "sha256": "a1447204af67995b92f7ee73bc0b5e6a0f01bcaaad1f133044983d11abbf91c8",
       "source": "INSTALLATION.md",
       "target": "oceanhorn/INSTALLATION.md"
     },
@@ -139,14 +139,14 @@
     {
       "kind": "payload",
       "mode": "0644",
-      "sha256": "c28fcca53637bc88e124af1725df13cb98c69dedefd62fb3cdbe1cdb6b760624",
+      "sha256": "fe840f52fb5578d3f77eb497115eb02c6036601c3a53e60df7995c7276baa77a",
       "source": "version.txt",
       "target": "oceanhorn/version.txt"
     },
     {
       "kind": "payload",
       "mode": "0644",
-      "sha256": "b583f1fa3c4c89257452a2eb3d5871f7038738a7b3341ee75bed0fd8fa70b9d9",
+      "sha256": "11a14045afe1414439506021f382e3e5a2d2e923b8cd99a68b01c169072c1b7b",
       "source": "FRAMEWORK-PIN.json",
       "target": "oceanhorn/FRAMEWORK-PIN.json"
     },
@@ -262,7 +262,7 @@
     },
     "port_dir": "oceanhorn",
     "profile": "universal-portmaster",
-    "version": "2.0.0"
+    "version": "2.0.1"
   },
   "portmaster_metadata": {
     "gameinfo_xml": {

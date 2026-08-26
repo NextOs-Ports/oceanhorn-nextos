@@ -57,7 +57,7 @@ for the APK again. Updating the port never touches `gamedata/`, `userdata/` or
 the installed game data. To uninstall, delete `ports/oceanhorn/` and the
 launcher — saves live under `userdata/` if you want to keep them.
 
-### Performance profiles
+### Memory/performance profiles
 
 `port-env.sh` selects `OCEANHORN_PROFILE`: `auto` (default; `low` on ~1 GB
 devices), `low` (half-resolution render with pixel-perfect integer upscale +
@@ -115,7 +115,7 @@ de novo. Atualizar o port nunca toca `gamedata/`, `userdata/` nem os dados
 instalados. Para desinstalar, apague `ports/oceanhorn/` e o launcher — os
 saves moram em `userdata/` se quiser preservá-los.
 
-### Perfis de desempenho
+### Perfis de memória e desempenho
 
 O `port-env.sh` seleciona `OCEANHORN_PROFILE`: `auto` (padrão; vira `low` em
 aparelho de ~1 GB), `low` (render na metade da resolução com upscale inteiro

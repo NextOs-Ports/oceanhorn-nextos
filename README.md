@@ -14,29 +14,31 @@ every AArch64 firmware we can reach. Video, audio, memory profile and controls
 are negotiated at runtime from real capabilities: no SDL backend, resolution or
 device name is ever hardcoded.
 
-**2.0.0** rebuilds the port on the NextOS **framework v2** (nxbootstrap 0.6.30
-launcher, NXExtract 1.2.18, nxgl 0.2.14 frame proof, nxrelease 0.2.30): a single
-generated launcher replaces the old `run.sh`, and performance profiles target
-the ~1 GB devices.
+**2.0.1** is built from the immutable NextOS **framework v2** release
+(`framework-v2-onda1`: nxbootstrap 0.6.30, NXExtract 1.2.18, nxgl 0.2.14,
+nxrelease 0.2.30). It keeps the single generated launcher and the four
+memory/performance profiles introduced in 2.0.0, and adds an evidence-driven
+EGL/GLES provider recovery for dArkOSRE-class KMSDRM systems.
 
-Status: **PLAYABLE**. 2.0.0 was device-proven on dArkOS RE / GO-Super
-(RK3326, Mali-G31, 1 GB): virgin NXExtract install (`NXE0000`), `low` profile
-engaged automatically (half-res render in LO-REPORT mode, pixel-perfect
-fullscreen title proved by capture, plus 2x texture economy), frame proof
-100% non-black,
-stable ~350 MB RSS and clean `SELECT+START` exit. The v1.0.x heritage
-validation:
+Status: **PLAYABLE**. The exact 2.0.1 public ZIP was installed over 2.0.0 and
+device-proven on dArkOS RE / GO-Super (RK3326, Mali-G31, 1 GB). Preflight,
+NXExtract and the mandatory five-second NXSplash passed; the default provider
+failure recovered automatically; `auto` selected `low`; and three frame-proof
+samples showed a complete fullscreen title at 100% non-black with opaque
+alpha. Separate launches also proved `medium` and `high`. Observed RSS was
+about 275 MB (`low`), 276 MB (`medium`) and 281 MB (`high`), with clean runtime
+shutdown in every test. The v1.0.x heritage validation additionally covers:
 
 | Aparelho | Vídeo | Resultado |
 |---|---|---|
 | **R36S / ArkOS** (RK3326, Mali-G31) | KMSDRM, ES3.0, 640×480 | título, cutscene e dungeon jogável, áudio, controle, `SELECT+START`; pico de 352 MB de RSS |
 | **NextOS Elite** (Amlogic-old, Mali-450) | fbdev, GLES2, 1280×720 | mesmo binário universal, sem regressão |
 
-Outros CFWs AArch64 (muOS, ROCKNIX, Batocera, Knulli e afins) são atendidos por
-detecção de capacidade, mas ainda **não** têm prova física — não os declaramos
-validados até alguém rodar.
+Other AArch64 CFWs (muOS, ROCKNIX, Batocera, Knulli and similar) are handled by
+capability detection, but still lack physical proof and are not claimed as
+validated yet.
 
-## Performance profiles / Perfis de desempenho (2.0.0)
+## Memory/performance profiles / Perfis de memória e desempenho (2.0.1)
 
 Edit `ports/oceanhorn/port-env.sh` (or export the variable) to pick one:
 
@@ -97,7 +99,8 @@ The loader reproduces the native Android sequence instead of replacing it:
 | Boot | Unity proxy handles crashed in `JNIBridge.invoke` | Keep ReflectionHelper GC handles and native JNIBridge pointers on their correct, separate paths |
 | Data | Android APK/files paths do not exist on NextOS | Redirect Unity and IL2CPP reads to the original `bin/Data` tree |
 | Rendering | Mali-450 is GLES2-only and some external-alpha sprites disappeared | Preserve the authored GLES2 variants and sample alpha from the decoded main texture |
-| Display | Phase-1 render scaling damaged framing (wrong panel size) and blurred the pixel art (linear filter), and never presented on KMSDRM | 2.0.0: scale FBO sized from the real panel, pixel-perfect NEAREST integer upscale, presented on both fbdev and KMSDRM paths; enabled by the `low` profile |
+| Display | Phase-1 render scaling damaged framing (wrong panel size) and blurred the pixel art (linear filter), and never presented on KMSDRM | Scale FBO sized from the real panel, pixel-perfect NEAREST integer upscale, presented on both fbdev and KMSDRM paths; enabled by the `low` profile |
+| EGL provider | dArkOSRE can expose a driverless versioned dispatcher while the working Mali provider is available through the portable names | Try the firmware defaults first; after an exhausted KMSDRM failure only, perform one clean re-exec with `libEGL.so` + `libGLESv2.so`, preserving explicit firmware/user choices |
 | Audio | FMOD asynchronous Android streams ended in `ERR_INTERNAL` | Open the original FSB data synchronously as resident samples before the Android worker fails |
 | Audio output | Android OpenSL ES is unavailable | Bridge OpenSL ES to SDL/PulseAudio, with soft limiting and a validated 1.5× output gain |
 | Controller | Rewired accepted Android events but did not bind left-stick movement | Publish the real Android InputDevice ranges and mirror the left stick to the working d-pad KeyEvent path, with dead zone and hysteresis |
@@ -123,45 +126,54 @@ with additional controllers has not been validated for this release.
 ### Game data
 
 Game libraries and assets are proprietary and are not stored in the source
-repository. A runtime installation contains:
+repository. A runtime installation has this public port layout; proprietary
+files appear only after NXExtract validates the owner's copy:
 
 ```text
-/storage/roms/ports/oceanhorn/
-├── oceanhorn
-├── run.sh
-├── libunity.so
-├── libil2cpp.so
-├── libmain.so
-├── bin/Data/
-└── userdata/
+ports/
+├── Oceanhorn Chronos Dungeon.sh
+└── oceanhorn/
+    ├── oceanhorn-nextos
+    ├── nxport.json
+    ├── port.json
+    ├── nxsplash-nextos
+    ├── gamedata/
+    ├── userdata/
+    ├── libunity.so       # installed owner data
+    ├── libil2cpp.so      # installed owner data
+    ├── libmain.so        # installed owner data
+    └── bin/Data/         # installed owner data
 ```
 
-The release package contains the exact required Unity data tree and an empty
-`userdata` directory. It does not contain development logs, personal saves,
-diagnostic captures, old binaries or the redundant source APK.
+The release ZIP contains no game data. It also excludes development logs,
+personal saves, diagnostic captures, old binaries and source containers.
 
 ### Build and run
 
 ```sh
-cd ports/oceanhorn
-./build.sh
+cd oceanhorn-nextos
+./build_universal.sh
 ```
 
-`build.sh` automatically selects the current NextOS Elite Amlogic-old AArch64
-toolchain/sysroot. The release build was produced against the current glibc
-2.43 sysroot; its highest referenced symbol is informational and may be lower.
+`build_universal.sh` uses the pinned offline Debian Buster AArch64 builder and
+audits the resulting ELF. The 2.0.1 binary's highest requirement is
+`GLIBC_2.27`, below the public `GLIBC_2.30` ceiling. Package generation then
+uses the exact framework commit and tree hashes in `FRAMEWORK-PIN.json`.
 
 Normal frontend entry:
 
 ```sh
-/storage/roms/ports_scripts/Oceanhorn\ Chronos\ Dungeon\ \(NextOS\ Elite\).sh
+/roms/ports/Oceanhorn\ Chronos\ Dungeon.sh
 ```
+
+On NextOS Elite, PortMaster maps that launcher to
+`/storage/roms/ports_scripts/Oceanhorn Chronos Dungeon.sh`.
 
 Direct engineering run:
 
 ```sh
-cd /storage/roms/ports/oceanhorn
-./run.sh
+cd /roms/ports
+./Oceanhorn\ Chronos\ Dungeon.sh
 ```
 
 ### Runtime options
@@ -187,43 +199,46 @@ never means editing a distributed file:
 export OCEAN_TRUE_MEMINFO=1
 ```
 
-`CUP_RENDERSCALE` is deliberately removed by the production launcher because
-scaled rendering was visually rejected on the target hardware.
+The profile values are defaults, not locks: an explicit `CUP_*` export in
+`port-env.sh` or `userdata/ocean-env.sh` takes precedence. The tested `low`
+profile sets `CUP_RENDERSCALE=2`, while `medium` and `high` keep native render.
 
 ### Source map
 
 - `src/main.c` — ELF loader integration, Android lifecycle, Unity/FMOD hooks,
-  data redirects, render loop and safe shutdown.
+  data redirects, one-shot provider recovery, render loop and safe shutdown.
 - `src/jni_shim.c` — fake Java/JNI environment, InputDevice publication,
   SharedPreferences persistence and callbacks.
 - `src/ocean_input.c` — SDL controller to Android KeyEvent/MotionEvent bridge,
   left-stick movement and `SELECT+START`.
 - `src/opensles_shim.c` — OpenSL ES to SDL/PulseAudio bridge and output gain.
-- `src/egl_shim.c`, `src/renderscale.c` — EGL/GLES routing and texture handling;
-  render scaling remains disabled in production.
+- `src/egl_shim.c`, `src/renderscale.c` — EGL/GLES routing and the
+  profile-controlled pixel-perfect render scale.
 - `src/sem_shim.c`, `src/pthread_fake.c` — Android/bionic synchronization
   compatibility on glibc.
 - `src/so_util.c` — AArch64 Android ELF mapping and relocation.
-- `run.sh` — one-instance guard, runtime environment, GPU profile and thermal
-  restoration.
+- generated launcher + `port-env.sh` — one-instance guard, memory/performance
+  profiles, runtime environment and PortMaster handoff.
 
 ### License
 
 The loader and launcher are GPL-3.0. Original game libraries and assets remain
 proprietary and are not covered by that license. See `LICENSE` and the runtime
-notice included with private full-data releases.
+notice included with the public BYO-data release.
 
 ## Português
 
-Port nativo AArch64 de **Oceanhorn: Chronos Dungeon 4.0b54** para aparelhos
-NextOS Elite com Amlogic Mali-450 (Utgard, GLES2). O so-loader dirige as
-bibliotecas Android originais do Unity 2022.3.61f1 IL2CPP e preserva a ordem do
-ciclo de vida nativo.
+Port universal AArch64 de **Oceanhorn: Chronos Dungeon 4.0b54** para handhelds
+Linux. O so-loader dirige as bibliotecas Android originais do Unity
+2022.3.61f1 IL2CPP e preserva a ordem do ciclo de vida nativo. O executável
+público exige no máximo `GLIBC_2.27`.
 
-Estado: **JOGÁVEL**. Foram validados gameplay, tela completa em 1280×720, áudio,
-save persistente, controle físico, movimento pelo analógico esquerdo e saída
-limpa. O gameplay medido fica normalmente em 25–30 FPS sem reduzir o
-framebuffer nem alterar os gráficos originais.
+Estado: **JOGÁVEL**. A 2.0.1 mantém os perfis `auto`, `low`, `medium` e `high`.
+No dArkOSRE com cerca de 1 GB, `auto` escolhe `low`: render 320×240 ampliado
+pixel-perfect para 640×480, texturas com teto 512 e RGBA4444. Também foram
+validados separadamente `medium` e `high`, ambos em render nativo 640×480. O
+ZIP exato passou por preflight, NXExtract, NXSplash obrigatória, recuperação
+EGL, três provas de frame por perfil e saída limpa.
 
 ### Como funciona
 
@@ -245,7 +260,8 @@ O loader reproduz o fluxo Android em vez de atalhá-lo:
 | Boot | Handles de proxy do Unity quebravam em `JNIBridge.invoke` | Separação correta entre GCHandle da ReflectionHelper e ponteiro nativo do JNIBridge |
 | Dados | Caminhos Android de APK/files não existem no NextOS | Redirecionamento para a árvore original `bin/Data` |
 | Render | Mali-450 só oferece GLES2 e sprites de alpha externo sumiam | Variantes GLES2 originais preservadas e alpha lido da textura principal decodificada |
-| Imagem | Render-scale experimental estragava enquadramento e qualidade | Framebuffer nativo obrigatório; produção nunca ativa render-scale |
+| Imagem | O render-scale antigo estragava enquadramento e qualidade | FBO baseado no painel real e upscale inteiro NEAREST, ativado somente pelo perfil `low` |
+| Provider EGL | dArkOSRE pode expor dispatcher versionado sem driver | Tenta primeiro a firmware; após falha KMSDRM comprovada, um único re-exec limpo usa `libEGL.so` + `libGLESv2.so` |
 | Áudio | Streams assíncronos do FMOD terminavam em `ERR_INTERNAL` | FSB original aberto de forma síncrona e residente antes da falha do worker Android |
 | Saída sonora | OpenSL ES Android não existe no sistema | Bridge OpenSL ES para SDL/PulseAudio, limitador suave e ganho validado de 1,5× |
 | Controle | Rewired aceitava eventos, mas não associava movimento ao analógico | InputDevice Android completo e analógico esquerdo espelhado no caminho funcional do direcional, com zona morta e histerese |
@@ -271,16 +287,16 @@ adicionais ainda não foi validado nesta entrega.
 ### Dados e instalação
 
 As bibliotecas e os assets do jogo são proprietários e não ficam no repositório
-de código. O pacote privado full-data inclui a árvore Unity necessária, as três
-bibliotecas ARM64, loader, launcher, licença, aviso, imagem do frontend e
-`userdata` vazio. Não inclui APK redundante, logs, saves pessoais, capturas,
-backups, fontes ou binários antigos.
+nem no ZIP público. O pacote traz launcher, loader, manifestos, NXExtract,
+NXSplash, licença, documentação e `userdata` vazio. A árvore Unity e as três
+bibliotecas ARM64 só são instaladas a partir da cópia legal do dono. O pacote
+não inclui containers do jogo, logs, saves pessoais, capturas, backups, fontes
+ou binários antigos.
 
-O port é BYO-data: o APK que você traz pode não ser exatamente a build de onde
-os endereços internos foram extraídos. O log abre com uma linha `[BUILD]` que
-diz se a sua cópia casa com a build de referência, e todo patch interno confere
-a assinatura do código antes de escrever — numa build diferente o patch se
-desliga sozinho em vez de corromper função desconhecida.
+O port é BYO-data. O SHA-256 do container de referência identifica a cópia
+testada, mas não é a única trava: a receita valida package ID, versão, ABI,
+estrutura e payloads internos críticos. Uma build incompatível falha com
+diagnóstico preciso antes de iniciar o jogo.
 
 Ajustes de testador vão em `ports/oceanhorn/userdata/ocean-env.sh` (um `export`
 por linha); esse arquivo sobrevive à atualização do port. Ver a tabela de
@@ -289,28 +305,29 @@ opções na seção em inglês.
 ### Compilar e executar
 
 ```sh
-cd ports/oceanhorn
-./build.sh
+cd oceanhorn-nextos
+./build_universal.sh
 ```
 
-O script escolhe automaticamente o toolchain/sysroot AArch64 da versão atual do
-NextOS Elite. O build desta entrega usa o sysroot glibc 2.43 atual.
+O script usa o builder AArch64 Debian Buster fixado e audita todos os requisitos
+do ELF. A entrega 2.0.1 exige no máximo `GLIBC_2.27`, respeitando o teto público
+`GLIBC_2.30`.
 
-Entrada normal pelo frontend:
+Entrada normal pelo frontend PortMaster:
 
 ```sh
-/storage/roms/ports_scripts/Oceanhorn\ Chronos\ Dungeon\ \(NextOS\ Elite\).sh
+/roms/ports/Oceanhorn\ Chronos\ Dungeon.sh
 ```
 
 Execução direta de engenharia:
 
 ```sh
-cd /storage/roms/ports/oceanhorn
-./run.sh
+cd /roms/ports
+./Oceanhorn\ Chronos\ Dungeon.sh
 ```
 
 ### Licença
 
 Loader e launcher são GPL-3.0. As bibliotecas e os assets originais do jogo
 continuam proprietários e não são cobertos por essa licença. Consulte `LICENSE`
-e o aviso incluído na entrega privada full-data.
+e o aviso incluído na entrega pública BYO-data.

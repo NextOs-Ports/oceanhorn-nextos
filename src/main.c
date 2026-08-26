@@ -17,6 +17,7 @@
 #include <dirent.h>
 #include <limits.h>
 #include <string.h>
+#include <strings.h>
 #include <stdarg.h>
 #include <unistd.h>
 #include <sched.h>
@@ -55,6 +56,49 @@ static const char *ocean_lib_path(const char *name, char *buf, size_t cap) {
   snprintf(buf, cap, "lib/%s", name);
   if (access(buf, R_OK) == 0) return buf;
   return name;
+}
+
+/* dArkOSRE/RK3326 can expose a driverless versioned EGL dispatcher while the
+ * working Mali KMS/GBM provider is reachable through the portable,
+ * unversioned names.  The canonical NXSplash 0.1.2 proves exactly this on the
+ * same boot by recovering with libEGL.so + libGLESv2.so.  The game must still
+ * try the firmware defaults first: only an exhausted KMSDRM window attempt,
+ * with no explicit provider supplied by the firmware/user, authorizes one
+ * clean re-exec.  exec replaces this process (never creates a second game)
+ * and restarts the complete Android/Unity lifecycle in its native order. */
+#define OCEAN_PROVIDER_REEXEC_MARKER "OCEAN_PROVIDER_REEXEC"
+static void ocean_reexec_with_portable_providers(char *const argv[]) {
+  const char *driver = SDL_GetCurrentVideoDriver();
+  int saved_errno;
+
+  if (!driver || strcasecmp(driver, "KMSDRM") != 0 ||
+      getenv(OCEAN_PROVIDER_REEXEC_MARKER) ||
+      getenv("SDL_VIDEO_EGL_DRIVER") || getenv("SDL_VIDEO_GL_DRIVER"))
+    return;
+
+  fprintf(stderr,
+          "[F2] KMSDRM esgotou EGL/GLES; retry limpo com providers "
+          "portáteis\n");
+  SDL_QuitSubSystem(SDL_INIT_VIDEO);
+  if (setenv("SDL_VIDEO_EGL_DRIVER", "libEGL.so", 1) != 0 ||
+      setenv("SDL_VIDEO_GL_DRIVER", "libGLESv2.so", 1) != 0 ||
+      setenv(OCEAN_PROVIDER_REEXEC_MARKER, "1", 1) != 0) {
+    saved_errno = errno;
+    unsetenv("SDL_VIDEO_EGL_DRIVER");
+    unsetenv("SDL_VIDEO_GL_DRIVER");
+    unsetenv(OCEAN_PROVIDER_REEXEC_MARKER);
+    fprintf(stderr, "[F2] retry de provider não armado: %s\n",
+            strerror(saved_errno));
+    return;
+  }
+
+  execv("/proc/self/exe", argv);
+  saved_errno = errno;
+  unsetenv("SDL_VIDEO_EGL_DRIVER");
+  unsetenv("SDL_VIDEO_GL_DRIVER");
+  unsetenv(OCEAN_PROVIDER_REEXEC_MARKER);
+  fprintf(stderr, "[F2] re-exec de provider falhou: %s\n",
+          strerror(saved_errno));
 }
 #include <link.h>
 
@@ -7060,6 +7104,10 @@ int main(int argc, char **argv) {
      DRM/compositor: janela SDL + re-rota os egl* da Unity p/ egl_shim. */
   if (cup_use_kmsdrm()) {
     extern int egl_shim_ensure_current(void);
+    if (getenv(OCEAN_PROVIDER_REEXEC_MARKER))
+      fprintf(stderr,
+              "[F2] providers portáteis ativos após re-exec "
+              "(EGL=libEGL.so GLES=libGLESv2.so)\n");
     /* VÍDEO e ÁUDIO separados: no ROCKNIX o PULSE herdado morto derrubava o
      * SDL_Init(VIDEO|AUDIO) inteiro -> driver=(null) -> EGL cru no Wayland ->
      * a Unity abortava em "Unable to find a configuration matching minimum
@@ -7091,6 +7139,7 @@ int main(int argc, char **argv) {
             SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "(null)");
     egl_shim_create_window();
     if (!egl_shim_get_window()) {
+      ocean_reexec_with_portable_providers(argv);
       fprintf(stderr, "[F2] falha fatal: SDL/EGL não criou janela\n");
       return 1;
     }
